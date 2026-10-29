@@ -1,5 +1,26 @@
 # Terrain HiGAN Web Demo
 
+## GitHub Pages
+
+The workflow in [deploy-pages.yml](../../../../.github/workflows/deploy-pages.yml)
+publishes the map at `https://aewhite.github.io/terrain-higan/` and the globe at
+`https://aewhite.github.io/terrain-higan/globe.html`.
+In the repository's **Settings → Pages**, select **GitHub Actions** as the source.
+Push demo changes to `main`, or run **Deploy web demo to GitHub Pages** manually
+from the Actions tab on `main`.
+
+The build downloads the `onnx-weights-v1.tar.gz` release asset from the
+`onnx-weights-v1` tag, verifies its SHA-256, installs the pinned browser runtime,
+synchronizes all 21 ONNX models, and runs the web unit tests. It uploads only
+HTML, JavaScript, CSS, and the generated model/runtime assets. The weights,
+dependencies, and staged site remain generated artifacts outside Git.
+
+To publish new weights, create another release archive with the same directory
+layout, then update `ONNX_WEIGHTS_TAG` and `ONNX_WEIGHTS_SHA256` in the workflow.
+The archive contains `z0_generator/latest/generator.onnx`,
+`zn_map_upscaler/z1/latest/upscaler.onnx` through `z10`, and
+`zn_map_upscaler/z11s/latest/upscaler.onnx` through `z20s`.
+
 ## Globe viewer
 
 Open `/src/terrain_higan/demos/web/globe.html` on the same server for the 3D

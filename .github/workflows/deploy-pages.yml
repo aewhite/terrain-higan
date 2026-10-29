@@ -1,0 +1,90 @@
+name: Deploy web demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-pages.yml
+      - src/terrain_higan/demos/web/**
+      - tests/web/**
+      - tests/fixtures/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+env:
+  ONNX_WEIGHTS_TAG: onnx-weights-v1
+  ONNX_WEIGHTS_SHA256: 253ba99c91ef6aaba0d4dcbaa00eb08f7a5b50abc45708763c5dacba2ead95ae
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/terrain_higan/demos/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install browser dependencies and runtime
+        run: npm ci
+
+      - name: Download and verify ONNX weights
+        working-directory: .
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p runs/pages/weights
+          curl --fail --location --retry 3 \
+            "https://github.com/${REPOSITORY}/releases/download/${ONNX_WEIGHTS_TAG}/${ONNX_WEIGHTS_TAG}.tar.gz" \
+            --output runs/pages/onnx-weights.tar.gz
+          echo "${ONNX_WEIGHTS_SHA256}  runs/pages/onnx-weights.tar.gz" | sha256sum --check
+          tar -xzf runs/pages/onnx-weights.tar.gz -C runs/pages/weights
+
+      - name: Install models and generate bundle manifest
+        run: npm run sync-models -- --weights-dir "$GITHUB_WORKSPACE/runs/pages/weights"
+
+      - name: Run web unit tests
+        run: npm test
+
+      - name: Stage static site
+        run: |
+          site="$GITHUB_WORKSPACE/runs/pages/site"
+          mkdir -p "$site/assets"
+          cp *.html *.js *.css "$site/"
+          cp -R assets/models assets/runtime "$site/assets/"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: runs/pages/site
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
