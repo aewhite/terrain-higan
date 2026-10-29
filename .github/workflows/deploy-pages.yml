@@ -38,6 +38,9 @@ jobs:
           node-version: 22
 
       - name: Install browser dependencies and runtime
+        env:
+          # Pages uses browser inference; native CUDA provider downloads are unnecessary.
+          ONNXRUNTIME_NODE_INSTALL: skip
         run: npm ci
 
       - name: Download and verify ONNX weights
