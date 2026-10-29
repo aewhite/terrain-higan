@@ -1,0 +1,21 @@
+# Agent Notes
+
+- This is a script-driven PyTorch terrain-generation project. Default to the user's own machine and project-root-relative artifact paths. Keep personal paths and Python settings in ignored `src/overrides.py`, loaded automatically by `terrain_higan.paths`; keep IDE and remote workflow settings local too. See `docs/environment.md`.
+- Read `docs/summary.md` for the project overview, data/artifact locations, and common workflows. Treat it as background context, not a strict source of truth; verify paths in the repo before editing or running commands.
+- Write documentation for Unix/Linux-like environments and readers familiar with basic shell, Python environment, and package tooling. Omit Windows-specific instructions and basic tooling walkthroughs; focus on project-specific setup and usage.
+- Prefer easy-to-read, direct code over highly generic abstractions. Add flexibility only when it removes clear duplication or supports an actual current use case.
+- Only guard against unexpected types, missing paths, or unusual environments as those cases are proven to be needed. Avoid broad defensive code that obscures the main training/data flow.
+- Keep changes narrowly scoped. This repo is script-driven, so follow the nearby script style and existing constants/helpers before introducing new structure.
+- Put cohesive model-group code under `src/terrain_higan/projects/<project_name>/`. A project package may contain its own PyTorch models, config/constants, training entry point, custom stages, losses, export helpers, and diagnostics.
+- Use short snake_case project names based on the model group or training target, such as `z0_patch_generator`, `z1_upscaler`, or `terrain_autoencoder`. Prefer direct module entry points like `python -m terrain_higan.projects.z0_patch_generator.train`.
+- Keep reusable cross-project building blocks in the existing shared packages such as `terrain_higan.models`, `terrain_higan.training`, `terrain_higan.etopo`, `terrain_higan.tensorboard_utils`, and `terrain_higan.visualization`. Promote project-local helpers only after a second real project needs them.
+- Keep generated artifacts out of `src/`; use project-specific subdirectories under `runs/`, `models/`, or `data/`.
+- Training requires an available CUDA device; inference and preprocessing also support CPU. Use the configured interpreter and explicitly selected CUDA host for validation without assuming a particular developer machine or GPU model.
+- Do not call `.eval()` on modules returned by `torch.export.load(...).module()`; exported-program modules do not support it. Use `torch.inference_mode()` around predecessor inference instead.
+- Put agent-created planning notes and plans under `.local/plans/`.
+- Treat `.local/legacy/` as human-only storage. Do not open, read, index, summarize, reference, or otherwise consider files in that directory unless the user explicitly asks for a specific file there.
+- Keep maintained tests under `tests/`, grouped by subsystem; web checks live under `tests/web/`. See `tests/README.md` for setup, test groups, and commands.
+- Test behavior and invariants rather than pinning tunable training defaults. Consolidate temporary regression checks into the relevant subsystem suite and remove obsolete reproductions.
+- Run affected Python tests with the configured interpreter after Python changes, and run the full Python suite before handing off shared model/training/inference changes. Use an explicitly selected CUDA machine for CUDA-specific checks and the `export` marker for export changes.
+- Run `npm test` in the web demo after web changes. Also run the relevant integration/model checks for mesh, walking, or inference changes, and browser checks for DOM, controls, and navigation changes. For test-layout or shared web infrastructure changes, run every group with `npm run test:all` or the equivalent group commands.
+- Add new long-term tests and their fixtures to Git with the corresponding change. Keep test outputs under `runs/` or temporary directories, never in `src/` or committed test fixtures.

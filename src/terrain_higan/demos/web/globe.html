@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08151a" />
+    <title>Terrain HiGAN | Globe</title>
+    <link id="styles" rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      { "imports": { "three": "./assets/runtime/three.module.js" } }
+    </script>
+  </head>
+  <body class="globe-view">
+    <canvas id="world" tabindex="0" aria-label="Interactive generated terrain globe"></canvas>
+    <main class="shell">
+      <header class="topbar">
+        <section class="controls panel" aria-label="Terrain controls">
+          <div class="brand">
+            <h1>Terrain HiGAN</h1>
+            <span
+              id="render-indicator"
+              data-state="rendering"
+              role="status"
+              aria-label="Generating globe"
+            ></span>
+            <button
+              id="toggle-shortcuts"
+              class="icon"
+              type="button"
+              title="Keyboard shortcuts (?)"
+              aria-label="Keyboard shortcuts"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="shortcuts-dialog"
+            >
+              ?
+            </button>
+          </div>
+          <nav class="view-links" aria-label="Viewer">
+            <a id="flat-link" href="./">2D map</a><span aria-current="page">3D globe</span>
+          </nav>
+          <div class="field seed-field">
+            <label for="seed">World seed</label>
+            <div class="row">
+              <input id="seed" inputmode="numeric" maxlength="20" aria-label="World seed" />
+              <button
+                id="randomize"
+                class="icon"
+                type="button"
+                title="Randomize seed"
+                aria-label="Randomize seed"
+              >
+                &#8635;
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="label">Colormap</span>
+            <div class="segmented" role="group" aria-label="Colormap">
+              <button data-map="realistic" aria-pressed="true" type="button">Terrain</button>
+              <button data-map="elevation" aria-pressed="false" type="button">Elevation</button>
+              <button data-map="contour" aria-pressed="false" type="button">Contours</button>
+            </div>
+          </div>
+          <div class="measurement">
+            <span>Distance</span><strong id="distance" aria-live="polite">--</strong>
+            <button
+              id="clear-measurement"
+              class="icon"
+              type="button"
+              disabled
+              aria-label="Clear measurement"
+              title="Clear measurement"
+            >
+              &#215;
+            </button>
+          </div>
+          <div class="readout" role="group" aria-label="Terrain metrics">
+            <span>State</span><strong id="status">Loading</strong> <span>Visible tiles</span
+            ><strong id="visible-tiles">--</strong> <span>Altitude</span
+            ><strong id="altitude">--</strong> <span>m / px (center)</span
+            ><strong id="resolution">--</strong> <span>Position</span
+            ><strong id="position">--</strong> <span>Elevation</span
+            ><strong id="elevation">--</strong> <span>Sample min</span
+            ><strong id="view-min">--</strong> <span>Sample max</span
+            ><strong id="view-max">--</strong> <span>Sample mean</span
+            ><strong id="view-mean">--</strong> <span>Sample std</span
+            ><strong id="view-stddev">--</strong>
+          </div>
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <div class="field globe-relief">
+              <label for="exaggeration">Vertical exaggeration</label>
+              <select id="exaggeration">
+                <option value="1">1× · true scale</option>
+                <option value="5">5×</option>
+                <option value="10">10×</option>
+              </select>
+            </div>
+            <div class="readout">
+              <span>Compute</span><strong id="backend">Starting</strong> <span>Threads</span
+              ><strong id="threads">--</strong> <span>Model</span
+              ><strong id="model">Loading</strong> <span>Weights</span
+              ><strong id="bundle">Loading</strong>
+            </div>
+          </details>
+          <details id="experimental" class="experimental">
+            <summary>Experimental</summary>
+            <div class="walk-toolbar">
+              <button id="toggle-walk" type="button" disabled>Walk</button>
+              <span id="walk-hint">Zoom below 20 km to walk</span>
+            </div>
+            <div id="walk-controls" class="walk-controls" hidden>
+              <div class="row">
+                <button id="pause-walk" type="button">Resume</button>
+                <label for="walk-speed">Speed</label>
+                <input id="walk-speed" type="range" min="0" max="50" step="0.1" value="1.4" />
+              </div>
+              <div class="readout">
+                <span>Walk</span><strong id="walk-status">Paused</strong>
+                <span>Requested speed</span><strong id="walk-requested">1.4 m/s</strong>
+                <span>Actual speed</span><strong id="walk-actual">0 m/s</strong>
+                <span>Height above ground</span><strong id="walk-ground">--</strong
+                ><span>Mouse steering</span><strong id="walk-mouse">Bound</strong>
+              </div>
+              <button id="export-scene" type="button" disabled>Export terrain GLB</button>
+              <p>
+                WASD / arrows move · release keys to stop · mouse looks and steers · click the view
+                to free/bind mouse · wheel changes speed · Space pauses · 2 m eye height · 50 m/s
+                max · z14s near entry · 20 km walking area · elevation-aware spherical horizon
+              </p>
+            </div>
+          </details>
+        </section>
+      </header>
+    </main>
+    <div class="scale" aria-label="Distance scale"><span id="scale-label">--</span><i></i></div>
+    <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+      <div class="dialog-header">
+        <h2 id="shortcuts-title">Globe controls</h2>
+        <button
+          id="close-shortcuts"
+          class="icon"
+          type="button"
+          aria-label="Close shortcuts"
+          autofocus
+        >
+          &#215;
+        </button>
+      </div>
+      <table class="shortcuts-table">
+        <tbody>
+          <tr>
+            <td>Move while walking</td>
+            <td><kbd>WASD</kbd> / arrows</td>
+          </tr>
+          <tr>
+            <td>Free / bind walking mouse</td>
+            <td>Click view</td>
+          </tr>
+          <tr>
+            <td>Rotate globe</td>
+            <td>Drag</td>
+          </tr>
+          <tr>
+            <td>Zoom toward pointer</td>
+            <td>Wheel</td>
+          </tr>
+          <tr>
+            <td>Measure surface distance</td>
+            <td>Two clicks</td>
+          </tr>
+          <tr>
+            <td>New seed</td>
+            <td><kbd>R</kbd></td>
+          </tr>
+          <tr>
+            <td>Reset view</td>
+            <td><kbd>Home</kbd></td>
+          </tr>
+          <tr>
+            <td>Focus globe</td>
+            <td><kbd>F</kbd></td>
+          </tr>
+          <tr>
+            <td>Clear measurement / exit focus</td>
+            <td><kbd>Esc</kbd></td>
+          </tr>
+          <tr>
+            <td>Zoom in / out</td>
+            <td><kbd>+</kbd> / <kbd>-</kbd></td>
+          </tr>
+          <tr>
+            <td>Toggle shortcuts</td>
+            <td><kbd>?</kbd></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="globe-help">
+        An Earth-sized generated planet. Enter Walk below 20 km above sea level. The complete scene
+        is prepared in all directions before movement begins, with z14s detail near the entry point
+        and progressively coarser terrain across the 20 km walking area and distant scenery.
+        Visibility uses spherical Earth geometry, including both your elevation above sea level and
+        each terrain feature's elevation, without atmospheric refraction. The camera stays 2 m above
+        the rendered ground, including the seabed, and moves at no more than 50 m/s. W/Up and S/Down
+        move forward/back; A/Left and D/Right strafe. Release keys to stop. Mouse position looks and
+        steers; click the view to free or bind mouse steering. Looking up/down does not change
+        height. Wheel and +/− change speed. Space pauses or resumes controls; Escape pauses.
+        Movement stops 20 km from the starting spot. Exit and re-enter to prepare another area.
+        Export terrain GLB downloads the detailed 20 km area in local meter coordinates, including
+        complete boundary tiles but excluding the distant backdrop. Exiting walk restores orbit
+        clearance above water or terrain. Distances follow great circles and ignore terrain height.
+        Elevation reports the generated seabed beneath water. Statistics sample the visible surface.
+      </p>
+    </dialog>
+    <script>
+      (async () => {
+        const response = await fetch("./assets/models/manifest.json", { cache: "no-store" });
+        if (!response.ok) throw new Error("Model manifest returned HTTP " + response.status);
+        const { bundle } = await response.json();
+        if (!/^[0-9a-f]{16}$/.test(bundle)) throw new Error("Invalid model manifest");
+        globalThis.TerrainHiGAN = { bundle };
+        document.getElementById("styles").href = "./styles.css?bundle=" + bundle;
+        for (const file of [
+          "terrain-common.js",
+          "rendering.js",
+          "globe-topology.js",
+          "globe-mesh.js",
+          "globe-tile-controller.js",
+        ]) {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "./" + file + "?bundle=" + bundle;
+            script.onload = resolve;
+            script.onerror = () => reject(new Error("Could not load " + file));
+            document.body.append(script);
+          });
+        }
+        await import("./globe-renderer.js?bundle=" + bundle);
+        await import("./globe-walk.js?bundle=" + bundle);
+        await import("./walk-minimap.js?bundle=" + bundle);
+        await import("./globe-export.js?bundle=" + bundle);
+        await import("./globe-app.js?bundle=" + bundle);
+      })().catch((error) => {
+        document.getElementById("status").textContent = "Error";
+        document.getElementById("status").title = error.message;
+        document.getElementById("render-indicator").dataset.state = "failed";
+        console.error(error);
+      });
+    </script>
+  </body>
+</html>

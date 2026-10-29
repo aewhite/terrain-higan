@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terrain-higan-inference"
+version = "0.1.2"
+description = "Seeded terrain generation with bundled PyTorch model weights"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.2", "numpy>=1.26", "safetensors>=0.4"]
+
+[project.optional-dependencies]
+demo = ["matplotlib>=3.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["terrain_higan", "terrain_higan.inference", "terrain_higan.models", "terrain_higan.demos", "terrain_higan.demos.map_to_image"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"terrain_higan.inference" = [
+    "weights/manifest.json",
+    "weights/z0_generator/latest/*.safetensors",
+    "weights/zn_map_upscaler/z*/latest/*.safetensors",
+]
+"terrain_higan.demos.map_to_image" = ["README.md"]

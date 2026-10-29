@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terrain-higan"
+version = "0.0.0"
+description = "Hierarchical infinite terrain generation with generative adversarial networks"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "affine",
+    "gradio",
+    "matplotlib",
+    "mpmath",
+    "numba",
+    "numpy",
+    "onnx",
+    "onnxscript",
+    "pyproj",
+    "rasterio",
+    "safetensors",
+    "tensorboard",
+    "torch",
+    "tqdm",
+]
+
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+test = ["pytest>=9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["--import-mode=importlib", "--strict-config", "--strict-markers"]
+markers = [
+    "cuda: requires a CUDA device",
+    "export: validates PyTorch or ONNX export artifacts",
+]

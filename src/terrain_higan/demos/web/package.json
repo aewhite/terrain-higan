@@ -1,0 +1,31 @@
+{
+  "private": true,
+  "scripts": {
+    "postinstall": "node prepare-runtime.cjs",
+    "prepare-runtime": "node prepare-runtime.cjs",
+    "start": "node serve.cjs",
+    "sync-models": "node sync-models.cjs",
+    "check-models": "node sync-models.cjs --check",
+    "test": "node ../../../../tests/web/run.cjs unit",
+    "test:unit": "node ../../../../tests/web/run.cjs unit",
+    "test:integration": "node ../../../../tests/web/run.cjs integration",
+    "test:models": "node ../../../../tests/web/run.cjs models",
+    "test:browser": "node ../../../../tests/web/run.cjs browser",
+    "test:all": "node ../../../../tests/web/run.cjs all",
+    "format": "prettier --write *.js *.cjs *.html *.css *.json \"../../../../tests/web/**/*.cjs\" \"../../../../tests/web/*.cjs\"",
+    "format:check": "prettier --check *.js *.cjs *.html *.css *.json \"../../../../tests/web/**/*.cjs\" \"../../../../tests/web/*.cjs\""
+  },
+  "devDependencies": {
+    "onnxruntime-node": "1.22.0",
+    "onnxruntime-web": "1.22.0",
+    "playwright": "1.48.2",
+    "prettier": "3.6.2"
+  },
+  "dependencies": {
+    "js-sha256": "0.11.1",
+    "three": "0.186.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

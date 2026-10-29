@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08151a" />
+    <title>Terrain HiGAN | Infinite Terrain</title>
+    <link id="styles" rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      { "imports": { "three": "./assets/runtime/three.module.js" } }
+    </script>
+  </head>
+  <body>
+    <canvas id="world" aria-label="Interactive infinite terrain map"></canvas>
+    <main class="shell">
+      <header class="topbar">
+        <section class="controls panel" aria-label="Terrain controls">
+          <div class="brand">
+            <h1>Terrain HiGAN</h1>
+            <span
+              id="render-indicator"
+              data-state="rendering"
+              role="status"
+              aria-label="Rendering terrain"
+              title="Rendering terrain"
+            ></span>
+            <button
+              id="toggle-shortcuts"
+              class="icon"
+              type="button"
+              title="Keyboard shortcuts (?)"
+              aria-label="Keyboard shortcuts"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="shortcuts-dialog"
+            >
+              <!-- Lucide keyboard icon, ISC License.
+                Copyright (c) 2026 Lucide Icons and Contributors
+                Permission to use, copy, modify, and/or distribute this software for any
+                purpose with or without fee is hereby granted, provided that the above
+                copyright notice and this permission notice appear in all copies.
+                THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+                WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+                MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+                ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+                WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+                ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+                OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+              -->
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M10 8h.01" />
+                <path d="M12 12h.01" />
+                <path d="M14 8h.01" />
+                <path d="M16 12h.01" />
+                <path d="M18 8h.01" />
+                <path d="M6 8h.01" />
+                <path d="M7 16h10" />
+                <path d="M8 12h.01" />
+                <rect width="20" height="16" x="2" y="4" rx="2" />
+              </svg>
+            </button>
+          </div>
+          <nav class="view-links" aria-label="Viewer">
+            <span aria-current="page">2D map</span
+            ><a id="globe-link" href="./globe.html">3D globe</a>
+          </nav>
+          <div class="field seed-field">
+            <label for="seed">World seed</label>
+            <div class="row">
+              <input id="seed" inputmode="numeric" maxlength="20" aria-label="World seed" />
+              <button
+                id="randomize"
+                class="icon"
+                type="button"
+                title="Randomize seed"
+                aria-label="Randomize seed"
+              >
+                &#8635;
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="label">Colormap</span>
+            <div class="segmented" role="group" aria-label="Colormap">
+              <button data-map="realistic" aria-pressed="true" type="button">Terrain</button
+              ><button data-map="elevation" aria-pressed="false" type="button">Elevation</button
+              ><button data-map="contour" aria-pressed="false" type="button">Contours</button>
+            </div>
+          </div>
+          <div class="measurement">
+            <span>Distance</span>
+            <strong id="distance" aria-live="polite">--</strong>
+            <button
+              id="clear-measurement"
+              class="icon"
+              type="button"
+              disabled
+              title="Clear measurement"
+              aria-label="Clear measurement"
+            >
+              &#215;
+            </button>
+          </div>
+          <div class="readout" role="group" aria-label="Terrain metrics">
+            <span>State</span><strong id="status">Rendering</strong> <span>Tiles</span
+            ><strong id="visible-tiles">--</strong><span>m / px</span
+            ><strong id="resolution">512 km / px</strong><span>Position</span
+            ><strong id="position">0, 0</strong><span>Elevation</span
+            ><strong id="elevation">--</strong><span>vmin</span><strong id="view-min">--</strong
+            ><span>vmax</span><strong id="view-max">--</strong><span>vmean</span
+            ><strong id="view-mean">--</strong><span>vstd</span><strong id="view-stddev">--</strong>
+          </div>
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <div class="readout">
+              <span>Compute</span><strong id="backend">Starting</strong> <span>Threads</span
+              ><strong id="threads">--</strong> <span>Model</span
+              ><strong id="model">Loading</strong> <span>Weights</span
+              ><strong id="bundle">Loading</strong>
+            </div>
+          </details>
+          <details id="experimental" class="experimental">
+            <summary>Experimental</summary>
+            <div class="walk-toolbar">
+              <button id="toggle-walk" type="button">Walk</button>
+              <span id="walk-hint">Walk over this terrain</span>
+            </div>
+            <div id="walk-controls" class="walk-controls" hidden>
+              <div class="row">
+                <button id="pause-walk" type="button">Resume</button>
+                <label for="walk-speed">Speed</label>
+                <input id="walk-speed" type="range" min="0" max="50" step="0.1" value="1.4" />
+              </div>
+              <div class="readout">
+                <span>Walk</span><strong id="walk-status">Paused</strong>
+                <span>Requested speed</span><strong id="walk-requested">1.4 m/s</strong>
+                <span>Actual speed</span><strong id="walk-actual">0 m/s</strong>
+                <span>Height above ground</span><strong id="walk-ground">--</strong
+                ><span>Mouse steering</span><strong id="walk-mouse">Bound</strong>
+              </div>
+              <button id="export-scene" type="button" disabled>Export terrain GLB</button>
+              <p>
+                WASD / arrows move · release keys to stop · mouse looks and steers · click the view
+                to free/bind mouse · wheel changes speed · Space pauses · 2 m eye height · 50 m/s
+                max · z14s near entry · 20 km walking area · scenery to 500 km
+              </p>
+            </div>
+          </details>
+        </section>
+      </header>
+    </main>
+    <div class="scale" aria-label="Distance scale">
+      <span id="scale-label">45,000 km</span><i id="scale-line"></i>
+    </div>
+    <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+      <div class="dialog-header">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <button
+          id="close-shortcuts"
+          class="icon"
+          type="button"
+          title="Close shortcuts"
+          aria-label="Close shortcuts"
+          autofocus
+        >
+          &#215;
+        </button>
+      </div>
+      <table class="shortcuts-table">
+        <thead>
+          <tr>
+            <th scope="col">Action</th>
+            <th scope="col">Key</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Move while walking</td>
+            <td><kbd>WASD</kbd> / arrows</td>
+          </tr>
+          <tr>
+            <td>Free / bind walking mouse</td>
+            <td>Click view</td>
+          </tr>
+          <tr>
+            <td>Pause / resume walking</td>
+            <td><kbd>Space</kbd></td>
+          </tr>
+          <tr>
+            <td>New seed</td>
+            <td><kbd>R</kbd></td>
+          </tr>
+          <tr>
+            <td>Reset view</td>
+            <td><kbd>Home</kbd></td>
+          </tr>
+          <tr>
+            <td>Focus map</td>
+            <td><kbd>F</kbd></td>
+          </tr>
+          <tr>
+            <td>Pause walking / clear measurement / exit focus</td>
+            <td><kbd>Esc</kbd></td>
+          </tr>
+          <tr>
+            <td>Zoom in</td>
+            <td><kbd>+</kbd> / <kbd>=</kbd></td>
+          </tr>
+          <tr>
+            <td>Zoom out</td>
+            <td><kbd>-</kbd></td>
+          </tr>
+          <tr>
+            <td>Toggle shortcuts</td>
+            <td><kbd>?</kbd></td>
+          </tr>
+        </tbody>
+      </table>
+    </dialog>
+    <script>
+      (async () => {
+        const response = await fetch("./assets/models/manifest.json", { cache: "no-store" });
+        if (!response.ok) throw new Error("Model manifest returned HTTP " + response.status);
+        const { bundle } = await response.json();
+        if (!/^[0-9a-f]{16}$/.test(bundle)) throw new Error("Invalid model manifest");
+        globalThis.TerrainHiGAN = { bundle };
+        document.getElementById("styles").href = "./styles.css?bundle=" + bundle;
+        for (const file of [
+          "terrain-common.js",
+          "rendering.js",
+          "tile-controller.js",
+          "globe-topology.js",
+          "globe-mesh.js",
+          "globe-tile-controller.js",
+          "app.js",
+        ]) {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "./" + file + "?bundle=" + bundle;
+            script.onload = resolve;
+            script.onerror = () => reject(new Error("Could not load " + file));
+            document.body.append(script);
+          });
+        }
+      })().catch((error) => {
+        document.getElementById("status").textContent = "Model failed: " + error.message;
+        const indicator = document.getElementById("render-indicator");
+        indicator.dataset.state = "failed";
+        indicator.setAttribute("aria-label", "Terrain failed");
+        indicator.title = error.message;
+        console.error(error);
+      });
+    </script>
+  </body>
+</html>
