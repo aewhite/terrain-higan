@@ -58,6 +58,28 @@ const vm = require("node:vm");
     assert.equal(previewStates.at(-1).previewReady, true, "refinement retains full coverage");
   }
   assert.equal(previewStates.at(-1).ready, true);
+  previewRenderer.meshPending = true;
+  previewController.update();
+  assert.equal(previewStates.at(-1).ready, false, "inference completion still waits for meshes");
+  assert.equal(previewStates.at(-1).pending, 1);
+  previewRenderer.patchTiles = new Map();
+  previewController.update();
+  assert.equal(
+    previewStates.at(-1).previewReady,
+    false,
+    "data alone cannot reveal an unbuilt preview",
+  );
+  for (const node of previewController.selection.leaves)
+    previewRenderer.patchTiles.set(node.key, {});
+  previewController.update();
+  assert.equal(
+    previewStates.at(-1).previewReady,
+    true,
+    "committed coverage remains a preview while newer meshes build",
+  );
+  previewRenderer.meshPending = false;
+  previewController.update();
+  assert.equal(previewStates.at(-1).ready, true);
   assert(previewController.patches.every((patch) => patch.source.depth === patch.depth));
   assert.equal(
     previewRequests.filter((request) => request.depth === 0).length,
@@ -97,6 +119,12 @@ const vm = require("node:vm");
     assert(leaves.every((node) => selectionRenderer.span(node.bounds) / 64 <= 1.5));
   }
   const renderer = Object.create(globe.GlobeRenderer.prototype);
+  // These geometry assertions inspect completed scenes; the budgeted path is
+  // exercised separately below with a deterministic clock.
+  const show = renderer.show;
+  renderer.show = function (tiles, patches) {
+    return show.call(this, tiles, patches, Infinity);
+  };
   let renders = 0;
   Object.assign(renderer, {
     canvas: { width: 320, height: 240 },
@@ -207,8 +235,12 @@ const vm = require("node:vm");
   let disposed = 0;
   for (const texture of oldTextures) texture.addEventListener("dispose", () => disposed++);
   renderer.restyle(controller.tiles.values(), "elevation", 1);
-  assert.equal(disposed, oldTextures.size, "shared textures are released exactly once");
   controller.update();
+  assert.equal(
+    disposed,
+    oldTextures.size,
+    "shared textures are released exactly once after the swap",
+  );
   assert(
     [...renderer.patchTiles.values()].every((patch) => !oldTextures.has(patch.mesh.material.map)),
   );
@@ -284,8 +316,99 @@ const vm = require("node:vm");
   }
   assert(segmentCounts[0] > segmentCounts[1], "measurement geometry adapts to zoom");
   renderer.measure(null, null, false);
+  renderer.clearPatches();
+  renderer.show = show;
+  renderer.setView(0, 0, globe.RADIUS * 2);
+  const source = {
+    key: "0:0:0:0",
+    face: 0,
+    depth: 0,
+    tileX: 0,
+    tileY: 0,
+    level: 2,
+    values: new Float32Array(68 * 68),
+    vertexValues: new Float32Array(67 * 67),
+  };
+  const basePatches = [{ ...source, source }];
+  renderer.show([source], basePatches, Infinity);
+  const original = renderer.patchTiles.get(source.key);
+  let originalDisposed = 0;
+  original.mesh.geometry.addEventListener("dispose", () => originalDisposed++);
+  const refined = [];
+  for (let north = 0; north < 2; north++)
+    for (let east = 0; east < 2; east++)
+      refined.push({
+        key: `0:1:${east}:${north}`,
+        face: 0,
+        depth: 1,
+        tileX: east,
+        tileY: north,
+        source,
+      });
+  let clock = 0,
+    wakeups = 0;
+  context.performance = { now: () => ++clock };
+  renderer.onChange = () => wakeups++;
+  const slice = (patches = refined) => {
+    const before = clock;
+    renderer.show([source], patches, 2);
+    assert(clock - before <= 3, "each slice yields when its clock budget expires");
+  };
+  let slices = 0;
+  do {
+    slice();
+    assert(++slices < 10000, "mesh preparation makes progress across frames");
+    if (renderer.meshPending) {
+      assert.equal(renderer.patchTiles.get(source.key), original, "old coverage stays installed");
+      assert.equal(original.mesh.visible, true);
+      assert.equal(originalDisposed, 0, "no old mesh is disposed before the complete swap");
+      assert(renderer.meshUpdate.created.every((tile) => !tile.mesh.visible));
+    }
+  } while (renderer.meshPending);
+  assert(slices > 1);
+  assert.equal(renderer.patchTiles.size, refined.length);
+  assert.equal(originalDisposed, 1);
+  assert([...renderer.patchTiles.values()].every((tile) => tile.mesh.visible));
+  const settledWakeups = wakeups;
+  slice();
+  assert.equal(wakeups, settledWakeups, "finished scenes stop scheduling frames");
+
+  // A camera move abandons prepared resources, keeping the committed scene.
+  const replacement = {
+    ...source,
+    values: source.values.slice(),
+    vertexValues: source.vertexValues.slice(),
+  };
+  const replacements = refined.map((patch) => ({ ...patch, source: replacement }));
+  do {
+    renderer.show([replacement], replacements, 2);
+  } while (!renderer.meshUpdate.created.length);
+  const abandoned = [...renderer.meshUpdate.created];
+  let abandonedDisposed = 0;
+  for (const tile of abandoned)
+    tile.mesh.geometry.addEventListener("dispose", () => abandonedDisposed++);
+  assert(renderer.usesTile(replacement), "in-progress sources cannot be evicted");
+  const installed = renderer.patchTiles;
+  renderer.setView(0, 25, globe.RADIUS * 2);
+  slice();
+  assert.equal(abandonedDisposed, abandoned.length, "obsolete prepared meshes are disposed");
+  assert.equal(renderer.patchTiles, installed, "cancellation preserves the installed scene");
+  assert(!renderer.usesTile(replacement), "cancelled jobs release their source pins");
+  while (renderer.meshPending) slice();
+
+  // Seed/reset cleanup must also cancel work that has already created meshes.
+  do {
+    renderer.show([replacement], replacements, 2);
+  } while (!renderer.meshUpdate.created.length);
+  renderer.clearPatches();
+  assert.equal(renderer.meshPending, false);
+  assert.equal(renderer.tiles.size, 0);
+  assert.equal(renderer.patchTiles.size, 0);
+  assert(!renderer.usesTile(replacement));
+  renderer.dispose(source);
+  renderer.dispose(replacement);
   console.log(
-    "Camera-local spherical refinement without fine inference, direct leaf scheduling, mesh reuse, idle rendering and shared-texture lifetime passed",
+    "Camera-local refinement, budgeted stitching/meshes, atomic swaps, cancellation/cleanup, mesh reuse, idle rendering and texture lifetime passed",
   );
 })().catch((error) => {
   console.error(error);

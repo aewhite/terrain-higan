@@ -302,6 +302,8 @@
         if (!status.ready) TerrainHiGAN.setRenderPhase("Refining");
       }
       renderer.setLoading(!initialGlobeReady && !walk?.active);
+      if (renderer.meshPending && !controller.sequence.length)
+        TerrainHiGAN.setRenderPhase("Refining");
       TerrainHiGAN.setRenderProgress(
         status.ready ? 1 : status.visible,
         status.ready ? 1 : status.visible + status.pending,
@@ -335,6 +337,7 @@
       canvas.dataset.visibleTiles = status.visible;
       canvas.dataset.cachedTiles = status.cached;
       canvas.dataset.ready = status.ready;
+      canvas.dataset.meshPending = !!renderer.meshPending;
       canvas.dataset.previewReady = status.previewReady;
       canvas.dataset.renderStage = status.ready
         ? "ready"

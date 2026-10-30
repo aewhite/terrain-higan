@@ -100,8 +100,13 @@ from inference. Geometry refines to the camera's selected spatial patches immedi
 even when only a coarse model tile is available. Each patch reprojects its nearest
 available ancestor's elevations and shares that ancestor's native texture. Zooming
 therefore concentrates polygons near the camera without waiting for neural inference
-or displaying giant flat parent triangles. Individual completed tiles upgrade their
-own patches immediately; there is no four-sibling loading barrier or animation loop.
+or displaying giant flat parent triangles. Individual completed tiles replace their
+own patches without a four-sibling loading barrier.
+Orbit mesh updates use a 4 ms work budget per frame, yielding during stitching and
+vertex construction. The existing mesh set stays visible until its replacements
+can be swapped together, preserving shared edges. Only one replacement set is
+prepared at a time; camera changes cancel obsolete work and release its meshes.
+Progress remains active until both inference and mesh preparation finish.
 Only coarse roots and final visible model tiles are requested for display, center-first;
 intermediate model dependencies remain the generator's responsibility. Offscreen
 display requests release the queue immediately. Obsolete dependency chains stop

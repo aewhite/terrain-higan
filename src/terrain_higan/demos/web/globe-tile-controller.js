@@ -37,6 +37,7 @@
 
     reset(seed) {
       this.renderer.walk?.reset();
+      this.renderer.clearPatches?.();
       for (const tile of this.tiles.values()) this.renderer.dispose(tile);
       this.tiles.clear();
       this.tilesVersion++;
@@ -141,7 +142,7 @@
       this.capacity = Math.max(this.mobile ? 128 : 512, protect.size + (this.mobile ? 32 : 128));
       for (const [key, tile] of this.tiles) {
         if (this.tiles.size <= this.capacity) break;
-        if (!protect.has(key) && this.active?.key !== key) {
+        if (!protect.has(key) && this.active?.key !== key && !this.renderer.usesTile?.(tile)) {
           this.renderer.dispose(tile);
           this.tiles.delete(key);
           this.tilesVersion++;
@@ -151,11 +152,15 @@
       this.displayVersion = this.tilesVersion;
       this.renderer.show(display, patches);
       this.onState({
-        ready: !this.sequence.length,
+        ready: !this.sequence.length && !this.renderer.meshPending,
         // Root tiles already provide a complete coarse surface. Show it while
         // the requested leaves continue to replace their ancestor's data.
-        previewReady: patches.length > 0 && patches.length === this.selection.leaves.length,
-        pending: this.sequence.length,
+        previewReady:
+          patches.length > 0 &&
+          patches.length === this.selection.leaves.length &&
+          (!this.renderer.patchTiles ||
+            this.selection.leaves.every((node) => this.renderer.patchTiles.has(node.key))),
+        pending: this.sequence.length + Number(!!this.renderer.meshPending),
         visible: patches.length,
         cached: this.tiles.size,
         capacity: this.capacity,
