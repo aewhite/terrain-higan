@@ -76,9 +76,9 @@
         const expanded = new Set();
         const required = new Map();
         const refine = (node) => {
-          if (!this.renderer.visible(node.bounds)) return;
           required.set(node.key, node);
           if (
+            !this.renderer.visible(node.bounds) ||
             node.depth >= TerrainHiGAN.globe.MAX_GLOBE_LEVEL - 2 ||
             this.renderer.span(node.bounds) <= 64 * (this.mobile ? 2 : MODEL_SAMPLE_PIXELS)
           )
@@ -89,14 +89,27 @@
         for (const root of roots) refine(root);
         const leaves = [...required.values()].filter((node) => !expanded.has(node.key));
         const ordered = [...required.values()]
-          .filter((node) => node.depth === 0 || !expanded.has(node.key))
+          .filter(
+            (node) =>
+              node.depth === 0 || (!expanded.has(node.key) && this.renderer.visible(node.bounds)),
+          )
           .sort(
             (first, second) =>
               Number(first.depth !== 0) - Number(second.depth !== 0) ||
               first.bounds.center.distanceTo(this.renderer.camera.position) -
                 second.bounds.center.distanceTo(this.renderer.camera.position),
           );
-        this.selection = { key: this.renderer.selectionKey, expanded, required, ordered, leaves };
+        // Every committed layout covers all six faces. Offscreen leaves use
+        // cached ancestors; only the six roots and visible detail need inference.
+        const wanted = new Set(ordered.map((node) => node.key));
+        this.selection = {
+          key: this.renderer.selectionKey,
+          expanded,
+          required,
+          ordered,
+          wanted,
+          leaves,
+        };
         this.nodeCapacity = Math.max(4096, this.selection.required.size * 4);
         if (this.nodes.size > this.nodeCapacity) {
           for (const [key, node] of this.nodes) {
@@ -109,11 +122,12 @@
             if (node.children?.some((child) => !this.nodes.has(child.key))) delete node.children;
         }
       }
-      if (this.active && !this.selection.required.has(this.active.key)) {
+      if (this.active && !this.selection.wanted.has(this.active.key)) {
         this.send({ type: "cancel" });
         this.active = null;
       }
-      for (const node of this.selection.required.values()) protect.add(node.key);
+      for (const node of this.selection.required.values())
+        if (node.depth === 0 || this.renderer.visible(node.bounds)) protect.add(node.key);
       for (const node of this.selection.ordered) {
         if (!this.tiles.has(node.key)) sequence.push(node);
       }
@@ -123,7 +137,10 @@
       } else {
         const available = new Map();
         for (const node of this.selection.required.values()) {
-          const source = this.tiles.get(node.key) || available.get(node.parentKey);
+          const source =
+            this.renderer.visible(node.bounds) || node.depth === 0
+              ? this.tiles.get(node.key) || available.get(node.parentKey)
+              : this.tiles.get(`${node.face}:0:0:0`);
           if (!source) continue;
           available.set(node.key, source);
           if (this.selection.expanded.has(node.key)) continue;
@@ -151,6 +168,8 @@
       this.displaySelection = this.selection;
       this.displayVersion = this.tilesVersion;
       this.renderer.show(display, patches);
+      const visible = patches.filter((patch) => this.renderer.visible(patch.bounds));
+      const visibleSources = new Set(visible.map((patch) => patch.source));
       this.onState({
         ready: !this.sequence.length && !this.renderer.meshPending,
         // Root tiles already provide a complete coarse surface. Show it while
@@ -161,11 +180,14 @@
           (!this.renderer.patchTiles ||
             this.selection.leaves.every((node) => this.renderer.patchTiles.has(node.key))),
         pending: this.sequence.length + Number(!!this.renderer.meshPending),
-        visible: patches.length,
+        visible: visible.length,
         cached: this.tiles.size,
         capacity: this.capacity,
         targetLevel: Math.max(2, ...[...protect].map((key) => Number(key.split(":")[1]) + 2)),
-        samplePixels: Math.max(0, ...display.map((tile) => this.renderer.span(tile.bounds) / 64)),
+        samplePixels: Math.max(
+          0,
+          ...[...visibleSources].map((tile) => this.renderer.span(tile.bounds) / 64),
+        ),
       });
       this.dispatch();
     }

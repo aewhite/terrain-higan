@@ -43,11 +43,25 @@ const vm = require("node:vm");
       vertexValues: new Float32Array(67 * 67).buffer,
     });
   previewController.reset("1");
+  const firstRoot = previewController.active;
+  previewRenderer.visible = (bounds) => bounds.face >= 4;
+  previewRenderer.selectionKey = "turning";
+  previewController.update();
+  assert.equal(
+    previewController.active.id,
+    firstRoot.id,
+    "spinning cannot cancel an in-flight coarse face needed for the whole sphere",
+  );
+  previewRenderer.visible = (bounds) => bounds.face < 2;
+  previewRenderer.selectionKey = "overview";
+  previewController.update();
   assert.equal(previewStates.at(-1).previewReady, false);
   reply();
   assert.equal(previewStates.at(-1).previewReady, false, "one face leaves a partial preview");
   assert.equal(previewController.active.depth, 0, "visible roots precede fine inference");
   reply();
+  assert.equal(previewStates.at(-1).previewReady, false, "hidden faces also need coarse coverage");
+  while (previewController.active.depth === 0) reply();
   assert.equal(previewStates.at(-1).previewReady, true, "coarse roots cover the visible globe");
   assert.equal(previewStates.at(-1).ready, false, "preview completion does not imply full detail");
   assert(previewController.active.depth > 0, "refinement starts automatically");
@@ -80,12 +94,24 @@ const vm = require("node:vm");
   previewRenderer.meshPending = false;
   previewController.update();
   assert.equal(previewStates.at(-1).ready, true);
-  assert(previewController.patches.every((patch) => patch.source.depth === patch.depth));
+  assert(
+    previewController.patches
+      .filter((patch) => previewRenderer.visible(patch.bounds))
+      .every((patch) => patch.source.depth === patch.depth),
+  );
   assert.equal(
     previewRequests.filter((request) => request.depth === 0).length,
     rootRequests,
     "refinement reuses the preview roots",
   );
+  previewRenderer.visible = (bounds) => bounds.face >= 4;
+  previewRenderer.selectionKey = "backside";
+  previewController.update();
+  assert(
+    previewController.sequence.every((node) => node.depth > 0),
+    "turning to the hidden hemisphere reuses its cached roots immediately",
+  );
+  assert(previewController.patches.every((patch) => previewController.tiles.has(patch.source.key)));
   previewController.reset("2");
   assert.equal(previewStates.at(-1).previewReady, false, "a new seed resets preview coverage");
   for (const [samplePixels, expectedDepth] of [
@@ -110,7 +136,9 @@ const vm = require("node:vm");
       () => {},
     );
     selectionController.reset("1");
-    const leaves = selectionController.selection.leaves;
+    const leaves = selectionController.selection.leaves.filter((node) =>
+      selectionRenderer.visible(node.bounds),
+    );
     assert.equal(leaves.length, 4 ** expectedDepth);
     assert(
       leaves.every((node) => node.depth === expectedDepth),
@@ -167,6 +195,32 @@ const vm = require("node:vm");
   controller.tilesVersion++;
   controller.active = null;
   controller.update();
+  const complete = renderer.patchTiles;
+  for (let face = 0; face < globe.FACE_COUNT; face++)
+    assert.equal(
+      [...complete.values()]
+        .filter((patch) => patch.face === face)
+        .reduce((area, patch) => area + 4 ** -patch.depth, 0),
+      1,
+      "committed meshes cover an entire face",
+    );
+  for (const [latitude, longitude] of [
+    [23, 13],
+    [23, 103],
+    [23, -167],
+    [23, -77],
+    [82, 27],
+    [-82, 27],
+  ]) {
+    renderer.setView(latitude, longitude, globe.RADIUS * 2);
+    assert(
+      renderer.surfacePick(160, 120),
+      `spinning reveals cached terrain at ${latitude}, ${longitude} before any mesh update`,
+    );
+    assert.equal(renderer.patchTiles, complete);
+  }
+  renderer.setView(20, -25, globe.RADIUS * 2);
+  controller.update();
   const overviewDepth = Math.max(...controller.patches.map((patch) => patch.depth));
   renderer.zoom(1e-12);
   controller.update();
@@ -190,7 +244,11 @@ const vm = require("node:vm");
       (node) => node.depth === 0 || !controller.selection.expanded.has(node.key),
     ),
   );
-  assert(renderer.patchTiles.size < 250, "geometry remains camera-local");
+  assert(
+    [...renderer.patchTiles.values()].filter((patch) => renderer.visible(patch.bounds)).length <
+      250,
+    "fine geometry remains camera-local while coarse geometry closes the sphere",
+  );
   for (let row = 0; row < 7; row++)
     for (let column = 0; column < 9; column++) {
       const horizontal = ((column + 0.5) * 320) / 9,

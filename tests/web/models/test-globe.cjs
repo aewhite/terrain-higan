@@ -49,11 +49,20 @@ const { bundleManifest } = demoRequire("./sync-models.cjs");
     );
   }
   assert.equal(states[states.length - 1].ready, true);
-  assert.equal(controller.display.length, 8);
+  assert.equal(controller.patches.filter((tile) => renderer.visible(tile.bounds)).length, 8);
+  assert.equal(
+    [...controller.tiles.values()].filter((tile) => tile.depth === 0).length,
+    globe.FACE_COUNT,
+  );
   for (let index = 0; index < 700; index++) controller.tiles.set(`old:${index}`, {});
   controller.update();
   assert(controller.tiles.size <= controller.capacity);
   assert(disposed > 0);
+  assert.equal(
+    [...controller.tiles.values()].filter((tile) => tile.depth === 0).length,
+    globe.FACE_COUNT,
+    "cache pressure retains all six coarse roots",
+  );
   controller.reset("2");
   controller.receive({ ...obsolete, type: "tile", values: new Float32Array(1).buffer });
   assert.equal(controller.tiles.size, 0, "old seed replies cannot populate the new world");

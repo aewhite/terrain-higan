@@ -396,6 +396,8 @@ class GlobeWalk {
     for (const [key, tile] of controller.tiles) {
       if (controller.tiles.size <= controller.capacity) break;
       if (this.selection.required.has(key)) continue;
+      // Keep the globe's six coarse faces for a complete sphere on orbit exit.
+      if (tile.depth === 0 && tile.level === 2) continue;
       renderer.dispose(tile);
       controller.tiles.delete(key);
       controller.tilesVersion++;

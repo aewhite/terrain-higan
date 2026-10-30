@@ -38,7 +38,7 @@ The globe supports the full z0–z20 hierarchy.
 - Pinch with two fingers to zoom and pan on touch screens. Lifting one finger
   resumes rotation; pinching does not place distance measurements.
 - A blank shaded planet appears while the first coarse tiles load. Once those
-  tiles cover the visible globe, the planet shows generated terrain immediately
+  six coarse faces are ready, the planet shows generated terrain immediately
   and refines it in place. The progress bar stays visible until full detail is ready.
 - Drag to carry the grabbed surface location with the pointer. Movement naturally
   slows as ground resolution increases. Wheel zoom follows the pointer; `+` and
@@ -92,8 +92,11 @@ terrain comes from the existing models. The 128 MiB inference cache stores raw
 and finalized blocks separately. Display capacity follows the tiles required by
 the current physical viewport, with a minimum of 512 tiles and 128 spare entries;
 eviction disposes GPU resources. Selection culls the S2 quadtree against the
-viewport and horizon before requesting tiles; offscreen siblings are not requested
-for display. The geometry-node LRU retains at most 4,096 nodes or four times the
+viewport and horizon before requesting fine tiles. All six z2 root tiles stay
+cached, including when offscreen. Offscreen regions remain coarse spatial patches
+in every committed mesh set, so rotating the camera reveals terrain immediately
+while detailed meshes catch up. Offscreen fine tiles do not trigger inference.
+The geometry-node LRU retains at most 4,096 nodes or four times the
 current selection size, whichever is larger; eviction also releases child references.
 Cached child bounds and projection samples keep camera updates separate
 from inference. Geometry refines to the camera's selected spatial patches immediately,
