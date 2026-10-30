@@ -3,13 +3,26 @@
 const runtimeOptions = new URLSearchParams(self.location.search);
 const bundle = runtimeOptions.get("bundle");
 const versioned = (file) => (bundle ? `${file}?bundle=${bundle}` : file);
-importScripts(versioned("./assets/runtime/ort.webgpu.min.js"));
+postMessage({ type: "phase", phase: "runtime", message: "Runtime" });
+const mobile = runtimeOptions.get("mobile") === "1";
+importScripts(
+  versioned(mobile ? "./assets/runtime/ort.wasm.min.js" : "./assets/runtime/ort.webgpu.min.js"),
+);
 if (!globalThis.crypto?.subtle) importScripts(versioned("./assets/runtime/sha256.js"));
 importScripts(versioned("./terrain-common.js"), versioned("./model-runtime.js"));
 
-ort.env.wasm.wasmPaths = new URL("./assets/runtime/", self.location.href).href;
+ort.env.wasm.wasmPaths = mobile
+  ? {
+      mjs: new URL("./assets/runtime/ort-wasm-mobile.mjs", self.location.href).href,
+      wasm: new URL("./assets/runtime/ort-wasm-simd-threaded.wasm", self.location.href).href,
+    }
+  : new URL("./assets/runtime/", self.location.href).href;
 ort.env.wasm.numThreads = 1;
-const runtime = new TerrainHiGAN.ModelRuntime(ort, runtimeOptions, (data) => postMessage(data));
+let currentPhase = "Runtime";
+const runtime = new TerrainHiGAN.ModelRuntime(ort, runtimeOptions, (data) => {
+  if (data.type === "phase") currentPhase = data.message;
+  postMessage(data);
+});
 
 self.onmessage = async ({ data }) => {
   try {
@@ -37,6 +50,10 @@ self.onmessage = async ({ data }) => {
       [values.buffer],
     );
   } catch (error) {
-    postMessage({ type: "error", id: data.id, message: error.message || String(error) });
+    postMessage({
+      type: "error",
+      id: data.id,
+      message: currentPhase + ": " + (error.message || String(error)),
+    });
   }
 };

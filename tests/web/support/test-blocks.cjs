@@ -12,6 +12,28 @@ module.exports = async function checkBlocks() {
   ]) {
     assert.equal(new api.InferencePool(new URLSearchParams(query), () => {}).size, size);
   }
+  for (const navigator of [
+    { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile Safari" },
+    { userAgent: "Mozilla/5.0 (Linux; Android 15) Chrome Mobile" },
+    { userAgentData: { mobile: true } },
+    {
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+      platform: "MacIntel",
+      maxTouchPoints: 5,
+    },
+  ]) {
+    const { api: mobile } = loadModules({ navigator });
+    assert.equal(
+      new mobile.InferencePool(new URLSearchParams(), () => {}).size,
+      1,
+      "mobile devices use a single runtime to limit memory allocations",
+    );
+    assert.equal(
+      new mobile.InferencePool(new URLSearchParams("workers=2"), () => {}).size,
+      2,
+      "an explicit worker count takes precedence",
+    );
+  }
   const request = { seed: 1n, assertCurrent() {} };
   const region = { zoom: 0, x: -3, y: -5, width: 2, height: 3 };
   const generator = new api.TerrainGenerator({});
@@ -103,9 +125,10 @@ module.exports = async function checkBlocks() {
   assert.equal((await clearing.generate(region, request)).values[0], 2);
 
   const workers = [];
+  const phases = [];
   const pool = new api.InferencePool(
     new URLSearchParams("workers=2"),
-    () => {},
+    (data) => phases.push(data),
     (url) => {
       const worker = {
         url,
@@ -129,6 +152,14 @@ module.exports = async function checkBlocks() {
   const model = await pool.sessionFor(0);
   const input = (value) => ({ noise: pool.tensor(new Float32Array([value]), [1, 1, 1, 1]) });
   const jobs = [1, 2, 3, 4].map((value) => pool.run(model, input(value)));
+  workers[0].onmessage({
+    data: { type: "phase", phase: "initialize", message: "Initializing runtime" },
+  });
+  assert.equal(
+    phases[0].message,
+    "Initializing runtime",
+    "worker startup phases reach the viewer before a result",
+  );
   assert.equal(workers.length, 2);
   assert.equal(pool.queue.length, 2);
   assert.equal(pool.metrics.maxParallelRuns, 2);
@@ -236,9 +267,14 @@ module.exports = async function checkBlocks() {
     },
   });
   assert.equal(childOrt.env.wasm.numThreads, 1, "each child owns a single-thread runtime");
-  assert.equal(childReplies[0].id, 42);
-  assert.equal(childReplies[0].type, "result");
-  assert.equal(new Float32Array(childReplies[0].values)[0], 9);
+  for (const phase of ["runtime", "initialize", "inference"])
+    assert(
+      childReplies.some((r) => r.type === "phase" && r.phase === phase),
+      phase + " is reported before tile completion",
+    );
+  const result = childReplies.find((r) => r.type === "result");
+  assert.equal(result.id, 42);
+  assert.equal(new Float32Array(result.values)[0], 9);
   console.log(
     "Block checks passed: canonical crops, shared claims, cancellation, failure/retry, clear ownership, worker routing",
   );

@@ -1,0 +1,18 @@
+{
+  "id": "./",
+  "name": "Terrain HiGAN",
+  "short_name": "Terrain",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#08151a",
+  "theme_color": "#08151a",
+  "icons": [
+    {
+      "src": "./assets/viewer-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

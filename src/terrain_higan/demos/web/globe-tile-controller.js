@@ -5,6 +5,7 @@
   class GlobeTileController {
     constructor(renderer, send, onState) {
       this.renderer = renderer;
+      this.mobile = !!TerrainHiGAN.mobileView;
       this.send = send;
       this.onState = onState;
       this.tiles = new Map();
@@ -78,7 +79,7 @@
           required.set(node.key, node);
           if (
             node.depth >= TerrainHiGAN.globe.MAX_GLOBE_LEVEL - 2 ||
-            this.renderer.span(node.bounds) <= 64 * MODEL_SAMPLE_PIXELS
+            this.renderer.span(node.bounds) <= 64 * (this.mobile ? 2 : MODEL_SAMPLE_PIXELS)
           )
             return;
           expanded.add(node.key);
@@ -137,7 +138,7 @@
       this.patches = patches;
       this.sequence = sequence;
       this.display = display;
-      this.capacity = Math.max(512, protect.size + 128);
+      this.capacity = Math.max(this.mobile ? 128 : 512, protect.size + (this.mobile ? 32 : 128));
       for (const [key, tile] of this.tiles) {
         if (this.tiles.size <= this.capacity) break;
         if (!protect.has(key) && this.active?.key !== key) {

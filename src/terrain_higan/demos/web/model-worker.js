@@ -124,5 +124,9 @@ importScripts(
   TerrainHiGAN.createWorkerHandler = createWorkerHandler;
   const emit = (message, transfers) => postMessage(message, transfers);
   const runtime = new InferencePool(runtimeOptions, emit);
-  self.onmessage = createWorkerHandler(runtime, new TerrainGenerator(runtime), emit);
+  const mobile = runtimeOptions.get("mobile") === "1";
+  const cache = mobile
+    ? new TerrainHiGAN.RegionCache(16 * 1024 * 1024, 1024)
+    : new TerrainHiGAN.RegionCache();
+  self.onmessage = createWorkerHandler(runtime, new TerrainGenerator(runtime, cache), emit);
 })();

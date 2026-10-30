@@ -15,6 +15,9 @@ async function ready(page) {
     { timeout: 360000 },
   );
   assert.equal(await page.locator("#status").innerText(), "Ready");
+  assert.equal(await page.locator("#world").getAttribute("data-loading-planet"), "false");
+  assert.equal(await page.locator("#render-progress-value").evaluate((p) => p.value), 1);
+  assert(!(await page.locator("#render-progress").isVisible()));
   await page.waitForFunction(() => Number(document.getElementById("world").dataset.samples) > 0);
 }
 

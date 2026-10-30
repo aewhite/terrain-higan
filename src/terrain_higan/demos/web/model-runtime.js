@@ -10,6 +10,8 @@
       this.options = options;
       this.emit = emit;
       this.sessions = new Map();
+      this.lowMemory = options.get("mobile") === "1";
+      if (this.lowMemory) this.size = 1;
       this.metrics = { modelRuns: 0, inferenceMs: 0 };
     }
 
@@ -29,10 +31,16 @@
         this.emit({ type: "bundle-changed" });
         throw new Error("Model bundle changed");
       }
+      this.emit({
+        type: "phase",
+        phase: "download",
+        message: `Download ${modelName(zoom)}`,
+      });
       const modelResponse = await fetch(this.modelUrl(zoom), { cache: "no-store" });
       if (!modelResponse.ok)
         throw new Error(`${modelName(zoom)} returned HTTP ${modelResponse.status}`);
       const bytes = new Uint8Array(await modelResponse.arrayBuffer());
+      this.emit({ type: "phase", phase: "verify", message: `Check ${modelName(zoom)}` });
       const digest = globalThis.crypto?.subtle
         ? await crypto.subtle.digest("SHA-256", bytes)
         : sha256.arrayBuffer(bytes);
@@ -46,15 +54,35 @@
       return bytes;
     }
 
-    sessionFor(zoom) {
-      if (!this.sessions.has(zoom)) this.sessions.set(zoom, this.loadSession(zoom));
-      return this.sessions.get(zoom);
+    async sessionFor(zoom) {
+      if (this.sessions.has(zoom)) {
+        const existing = this.sessions.get(zoom);
+        this.sessions.delete(zoom);
+        this.sessions.set(zoom, existing);
+        return existing;
+      }
+      // Mobile workers execute one job at a time, so unused sessions can be
+      // released before loading the next model without interrupting inference.
+      if (this.lowMemory && this.sessions.size >= 4) {
+        const oldest = this.sessions.keys().next().value;
+        const model = await this.sessions.get(oldest);
+        this.sessions.delete(oldest);
+        await model.session.release();
+      }
+      const pending = this.loadSession(zoom);
+      this.sessions.set(zoom, pending);
+      return pending;
     }
 
     async loadSession(zoom) {
       const name = modelName(zoom);
       const model = await this.verifiedModelBytes(zoom);
-      const cpuSelected = this.options.get("backend") === "wasm";
+      this.emit({
+        type: "phase",
+        phase: "initialize",
+        message: `Load ${name}`,
+      });
+      const cpuSelected = this.lowMemory || this.options.get("backend") === "wasm";
       const useWasm = cpuSelected || zoom <= CANONICAL_PARENT_MAX_ZOOM;
       let detail = cpuSelected
         ? "CPU selected"
@@ -82,6 +110,7 @@
       }
       const session = await this.ort.InferenceSession.create(model, {
         executionProviders: ["wasm"],
+        ...(this.lowMemory ? { enableCpuMemArena: false, enableMemPattern: false } : {}),
       });
       return {
         session,
@@ -98,9 +127,61 @@
       return new this.ort.Tensor("float32", values, dimensions);
     }
 
+    async runSmallPatches(model, inputs) {
+      const factor = model.name === "z0" ? 1 : 2;
+      const first = Object.values(inputs)[0];
+      const height = first.dims[2] * factor - 16;
+      const width = first.dims[3] * factor - 16;
+      if (height <= 32 && width <= 32) return model.session.run(inputs);
+      const patchHeight = Math.min(32, height),
+        patchWidth = Math.min(32, width);
+      const inputHeight = (patchHeight + 16) / factor,
+        inputWidth = (patchWidth + 16) / factor;
+      const values = new Float32Array(width * height);
+      for (let top = 0; top < height; top += patchHeight) {
+        const sourceTop = Math.min(top, height - patchHeight);
+        for (let left = 0; left < width; left += patchWidth) {
+          const sourceLeft = Math.min(left, width - patchWidth);
+          const patches = {};
+          for (const [name, tensor] of Object.entries(inputs)) {
+            const [, channels, rows, columns] = tensor.dims;
+            const data = new Float32Array(channels * inputHeight * inputWidth);
+            for (let channel = 0; channel < channels; channel++)
+              for (let row = 0; row < inputHeight; row++) {
+                const offset =
+                  (channel * rows + sourceTop / factor + row) * columns + sourceLeft / factor;
+                data.set(
+                  tensor.data.subarray(offset, offset + inputWidth),
+                  (channel * inputHeight + row) * inputWidth,
+                );
+              }
+            patches[name] = this.tensor(data, [1, channels, inputHeight, inputWidth]);
+          }
+          const result = await model.session.run(patches);
+          const output = result.elevation_normalized;
+          const copyWidth = Math.min(patchWidth, width - left);
+          for (let row = 0; row < Math.min(patchHeight, height - top); row++) {
+            const offset = (top - sourceTop + row) * patchWidth + left - sourceLeft;
+            values.set(
+              output.data.subarray(offset, offset + copyWidth),
+              (top + row) * width + left,
+            );
+          }
+        }
+      }
+      return { elevation_normalized: this.tensor(values, [1, 1, height, width]) };
+    }
+
     async run(model, inputs) {
+      this.emit({
+        type: "phase",
+        phase: "inference",
+        message: `Generate ${model.name}`,
+      });
       const start = performance.now();
-      const output = await model.session.run(inputs);
+      const output = this.lowMemory
+        ? await this.runSmallPatches(model, inputs)
+        : await model.session.run(inputs);
       this.metrics.modelRuns++;
       this.metrics.inferenceMs += performance.now() - start;
       return output;

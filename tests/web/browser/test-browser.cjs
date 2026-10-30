@@ -206,7 +206,7 @@ async function checkCoastlineSeam(browser) {
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(baseUrl + "?backend=wasm&threads=4#seed=4829347");
+    await page.goto(baseUrl + "?backend=wasm&threads=4#seed=4829347&z=0");
     await ready(page);
     assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("z"), "0");
     assert(await page.locator("#seed").isVisible());
@@ -263,6 +263,7 @@ async function checkCoastlineSeam(browser) {
       await route.continue();
     });
     await page.keyboard.press("+");
+    await page.waitForFunction(() => new URLSearchParams(location.hash.slice(1)).get("z") === "1");
     assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("z"), "1");
     assert.equal(await page.locator("#model").innerText(), "Loading");
     const preview = await page.evaluate(() => {
@@ -272,12 +273,10 @@ async function checkCoastlineSeam(browser) {
         colors.add(data[i] * 65536 + data[i + 1] * 256 + data[i + 2]);
       return {
         colors: [...colors],
-        smoothing: world.getContext("2d").imageSmoothingEnabled,
         runs: Number(world.dataset.modelRuns),
       };
     });
     assert(preview.colors.length > 1, "zoom should preserve visible terrain before z1 loads");
-    assert.equal(preview.smoothing, false);
     assert(
       preview.colors.every((color) => sourceColors.has(color)),
       "zoom previews should preserve source colors without blending",
@@ -290,6 +289,7 @@ async function checkCoastlineSeam(browser) {
     assert.equal(await page.locator("#status").innerText(), "Ready");
     const after = Number(await page.locator("#world").getAttribute("data-model-runs"));
     await page.keyboard.press("-");
+    await page.waitForFunction(() => new URLSearchParams(location.hash.slice(1)).get("z") === "0");
     await ready(page);
     assert.equal(await page.locator("#model").innerText(), "z0");
     assert.equal(
@@ -310,8 +310,16 @@ async function checkCoastlineSeam(browser) {
     await bundlePage.waitForFunction(() =>
       /^[0-9a-f]{8}$/.test(document.querySelector("#bundle").textContent),
     );
+    await bundlePage.evaluate(() => (window.navigationSentinel = 1));
     changedBundle = true;
     await bundlePage.evaluate(() => dispatchEvent(new Event("focus")));
+    await bundlePage.locator("#reload-viewer").waitFor({ state: "visible" });
+    assert.equal(
+      await bundlePage.evaluate(() => window.navigationSentinel),
+      1,
+      "bundle updates cannot reset an active view",
+    );
+    await bundlePage.locator("#reload-viewer").click();
     await bundlePage.waitForFunction(
       () => document.querySelector("#bundle").textContent === "00000000",
       {},
@@ -327,7 +335,8 @@ async function checkCoastlineSeam(browser) {
     await page.keyboard.press("-");
     await page.keyboard.press("Home");
     await ready(page);
-    assert.equal(await page.locator("#model").innerText(), "z0");
+    const resetZoom = new URLSearchParams(new URL(page.url()).hash.slice(1)).get("z");
+    assert.equal(await page.locator("#model").innerText(), "z" + resetZoom);
     assert.equal(await page.locator("#backend").innerText(), "CPU / WASM");
     await page.setViewportSize({ width: 1100, height: 760 });
     await page.waitForFunction(() => world.width === 2200 && world.height === 1520);

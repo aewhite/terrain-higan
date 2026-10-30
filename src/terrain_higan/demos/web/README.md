@@ -35,6 +35,9 @@ ignored runtime directory. Rendering requires WebGL2. Inference uses the
 WASM/WebGPU provider policy: WASM through z15 and optional WebGPU at z16–z20.
 The globe supports the full z0–z20 hierarchy.
 
+- Pinch with two fingers to zoom and pan on touch screens. Lifting one finger
+  resumes rotation; pinching does not place distance measurements.
+- A blank shaded planet appears while initial terrain is loading.
 - Drag to carry the grabbed surface location with the pointer. Movement naturally
   slows as ground resolution increases. Wheel zoom follows the pointer; `+` and
   `-` zoom at the center. Zoom stops at native z20 resolution, with clearance
@@ -204,7 +207,18 @@ same coordinate-addressed Philox algorithm used by `terrain_higan.inference`. Ma
 seeds alone do not promise identical neural terrain across providers or other
 inference implementations; small rounding differences can grow through repeated upscaling.
 
-Four independent inference workers load ONNX Runtime Web from `assets/runtime/` and z0 through
+Desktop browsers default to four independent inference workers; phones and tablets
+default to one to limit WASM and model-session memory. Mobile uses the smaller
+CPU-only WASM build, 128px map tiles and sequential 32px inference patches in
+both views. It retains at most four model sessions, releases older sessions,
+disables per-session memory arenas, and bounds the generated-terrain cache to
+16 MiB. Mobile also uses a generated WASM loader capped at a 256 MiB shared-memory
+maximum (the upstream loader requests 4 GiB), and prepares globe dependencies
+sequentially to avoid retaining a large queued dependency tree. The loader
+transformation is checked against the pinned ONNX Runtime package. Smaller
+inference windows preserve the model halo and pixel-shuffle phase. Use `?workers=1` to select
+the lower-memory path explicitly, or `?workers=2` through `?workers=4` to override it.
+The inference workers load ONNX Runtime Web from `assets/runtime/` and z0 through
 z10 plus z11s through z20s exported checkpoints from `assets/models/`. The WebGPU
 mode uses WASM for z0 through z15, then WebGPU for z16 through z20 when available.
 This keeps the coarse parent terrain consistent across backends: tiny provider
@@ -226,16 +240,40 @@ residual to the nearest-upscaled parent.
 The network's terrain and sine/cosine input features use the nearest-upscaled
 parent; the slope-based map serves as the base for its learned corrections.
 
-Zoom changes reproject cached model tiles using nearest-neighbor sampling. Incoming
+Zoom changes reuse cached model tiles, with one filtered draw for fractional scales.
+Small pans crop the existing native-pixel mosaic instead of rebuilding it, and
+elevation statistics wait until interaction pauses. Mobile display density is
+bounded to reduce canvas and geometry work during gestures. Incoming
 tiles replace the preview at native resolution. A separate bounded display cache
 retains prior zoom levels; a new seed or colormap never displays another world's
 preview. Obsolete display requests release immediately; shared block producers
 already in progress can finish.
 
+Rendering progress appears above the distance scale while work is pending. It
+uses short single-line labels (Runtime, Download, Check, Load, Generate), then
+disappears when the view is ready. Full failure details remain in the panel title
+and the sidebar State readout; an allocation failure is labeled Out of memory. The ruler fills the
+scale panel; its label uses that full width.
+
+The ⛶ button at the top left enters fullscreen on supported browsers and is
+hidden when unavailable. On iPhone, Safari’s Share → Add to Home Screen can open
+the viewer as a standalone app (enable Open as Web App if shown).
+
+On phones and tablets, controls start collapsed. Use the top-right menu button
+to expand or collapse them. Keyboard shortcuts and the experimental walking
+controls are hidden on mobile in both portrait and landscape.
+
 Press `F` to enter map-only focus mode, keeping the distance scale in the map's
 bottom-right corner. Press `F` again or `Escape` to restore the controls. Use the
 keyboard icon or `?` to toggle the shortcuts dialog; `Escape` also dismisses it.
-Zoom with the mouse wheel or `+` / `-` keys.
+Zoom with the mouse wheel, a two-finger pinch, or `+` / `-` keys. Drag with one
+finger to pan; two fingers can pan while pinching. The 2D camera zooms continuously;
+wheel and keyboard zoom ease between scales. Inference uses the next native model
+level, with cached terrain scaled while new detail loads. Shared URLs retain fractional zoom.
+
+New 2D views and `Home` choose the nearest zoom level whose viewport covers
+Earth’s surface area (about 510 million km²), accounting for screen size and
+pixel density. A zoom level in a shared URL takes precedence.
 
 Click or tap two map points to measure their
 straight horizontal distance. The dashed line previews the distance before the
@@ -294,9 +332,10 @@ Threads shows the worker count and one CPU thread per worker.
 Each inference worker uses one WASM thread. The pinned runtime's threaded convolutions round
 differently for different region shapes; repeated upscaling can amplify this into
 visible coastline breaks between neighboring tiles. The `threads` query parameter
-is ignored. Four workers are used by default (the maximum); `?workers=1` or
-`?workers=2` selects a smaller pool. Each runtime owns its model sessions and WASM memory, while
-elevation blocks and pending claims remain in the coordinator. Parent dependencies
+is ignored. Desktop browsers default to four workers (the maximum); phones and
+tablets default to one. `?workers=1` or `?workers=2` explicitly selects the pool size.
+Each runtime owns its model sessions and WASM memory, while elevation blocks and
+pending claims remain in the coordinator. Parent dependencies
 are assembled before dispatching inference, so workers never wait for other jobs
 in the pool. Only assembled input buffers are transferred to inference workers;
 canonical cache buffers remain owned by the coordinator. Cancelled display requests
@@ -414,3 +453,6 @@ suite checks the real WASM worker, previews, errors, cancellation/navigation,
 desktop/mobile canvases, and bundle reloads. Screenshots go under
 `runs/demo-inference-refactor/`. The headed diagnostic checks actual WebGPU
 availability and reports the provider that produced each result.
+
+Code/model bundle updates show a Reload notice instead of automatically resetting
+the viewer. Reload when convenient to use the new bundle.

@@ -87,6 +87,12 @@ class GlobeRenderer {
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.4));
     this.sun = new THREE.DirectionalLight(0xffffff, 1.7);
     this.scene.add(this.sun);
+    this.loadingPlanet = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9999, 64, 32),
+      this.depthMaterial(new THREE.MeshLambertMaterial({ color: 0x345467 })),
+    );
+    this.scene.add(this.loadingPlanet);
+    this.canvas.dataset.loadingPlanet = "true";
     this.raycaster = new THREE.Raycaster();
     this.sphere = new THREE.Sphere(new THREE.Vector3(), 1);
     this.frustum = new THREE.Frustum();
@@ -99,6 +105,13 @@ class GlobeRenderer {
       this.setView(20, -25, RADIUS * 2);
       this.resize();
     }
+  }
+
+  setLoading(loading) {
+    if (this.loadingPlanet.visible === loading) return;
+    this.loadingPlanet.visible = loading;
+    this.canvas.dataset.loadingPlanet = String(loading);
+    this.renderDirty = true;
   }
 
   createStars() {
@@ -307,7 +320,7 @@ class GlobeRenderer {
   }
 
   resize() {
-    this.renderer.setPixelRatio(devicePixelRatio || 1);
+    this.renderer.setPixelRatio(TerrainHiGAN.displayPixelRatio());
     this.renderer.setSize(innerWidth, innerHeight);
     this.camera.aspect = innerWidth / innerHeight;
     this.updateCamera();

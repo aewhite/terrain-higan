@@ -26,6 +26,8 @@ const types = {
   ".css": "text/css",
   ".js": "text/javascript",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
+  ".svg": "image/svg+xml",
   ".mjs": "text/javascript",
   ".wasm": "application/wasm",
   ".onnx": "application/octet-stream",

@@ -7,6 +7,24 @@ const assert = require("node:assert/strict");
   load("globe-terrain.js");
   const { GlobeGenerator, ObsoleteGlobeRequest } = api.globe;
 
+  const mobileGenerator = new GlobeGenerator({ lowMemory: true });
+  let activeDependencies = 0,
+    peakDependencies = 0;
+  mobileGenerator.block = async (_seed, region) => {
+    activeDependencies++;
+    peakDependencies = Math.max(peakDependencies, activeDependencies);
+    await Promise.resolve();
+    activeDependencies--;
+    return { ...region, values: new Float32Array(region.width * region.height).fill(region.x) };
+  };
+  const gathered = await mobileGenerator.gather(
+    1n,
+    10,
+    [0, 64, 128].map((east) => ({ face: 0, east, north: 0 })),
+  );
+  assert.equal(peakDependencies, 1, "mobile prepares one dependency region at a time");
+  assert.deepEqual(Array.from(gathered), [0, 64, 128]);
+
   function gatedRuntime() {
     let release, entered;
     const gate = new Promise((resolve) => {

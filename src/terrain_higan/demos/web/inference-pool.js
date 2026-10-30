@@ -5,14 +5,16 @@
   class InferencePool {
     constructor(options, emit, createWorker = (url) => new Worker(url)) {
       this.options = options;
+      this.lowMemory = options.get("mobile") === "1";
       this.emit = emit;
       this.createWorker = createWorker;
-      this.size = Math.max(1, Math.min(4, Math.trunc(Number(options.get("workers")) || 4)));
+      this.size = TerrainHiGAN.inferenceWorkerCount(options);
       this.slots = Array.from({ length: this.size }, () => ({ worker: null, job: null }));
       this.queue = [];
       this.nextId = 0;
       this.providers = new Map();
       this.error = null;
+      this.lastInferencePhase = -Infinity;
       this.metrics = {
         modelRuns: 0,
         inferenceMs: 0,
@@ -87,6 +89,14 @@
       if (data.type === "bundle-changed") {
         this.emit(data);
         this.fail(new Error("Model bundle changed"));
+        return;
+      }
+      if (data.type === "phase" && slot.job) {
+        const now = performance.now();
+        if (data.phase !== "inference" || now - this.lastInferencePhase >= 100) {
+          if (data.phase === "inference") this.lastInferencePhase = now;
+          this.emit(data);
+        }
         return;
       }
       const job = slot.job;

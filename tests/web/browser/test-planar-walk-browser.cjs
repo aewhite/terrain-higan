@@ -179,7 +179,14 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
     assert.equal(await page.locator("#walk-world").count(), 0);
     assert.equal(await page.locator(".walk-minimap").count(), 0);
     await page.keyboard.press("Home");
-    await page.waitForFunction(() => new URLSearchParams(location.hash.slice(1)).get("z") === "0");
+    await page.waitForFunction(() => {
+      const params = new URLSearchParams(location.hash.slice(1));
+      const zoom = Number(params.get("z"));
+      const area =
+        innerWidth * innerHeight * devicePixelRatio ** 2 * TerrainHiGAN.metersPerPixel(zoom) ** 2;
+      const ratio = area / (4 * Math.PI * 6371000 ** 2);
+      return params.get("x") === "0" && params.get("y") === "0" && ratio >= 0.5 && ratio <= 2;
+    });
     await page.locator("#toggle-walk").click();
     await page.waitForFunction(
       () => document.getElementById("walk-world")?.dataset.walkPrepared === "true",

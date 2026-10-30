@@ -24,9 +24,13 @@ importScripts(
     return result;
   };
   const planar = options.get("surface") === "planar";
+  const cache =
+    options.get("mobile") === "1"
+      ? new TerrainHiGAN.RegionCache(16 * 1024 * 1024, 1024)
+      : new TerrainHiGAN.RegionCache();
   const generator = planar
-    ? new TerrainHiGAN.TerrainGenerator(runtime)
-    : new TerrainHiGAN.globe.GlobeGenerator(runtime);
+    ? new TerrainHiGAN.TerrainGenerator(runtime, cache)
+    : new TerrainHiGAN.globe.GlobeGenerator(runtime, cache);
   let generation = 0;
   self.onmessage = async ({ data }) => {
     if (data.type === "reset") {

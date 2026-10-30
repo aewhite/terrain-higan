@@ -1,8 +1,9 @@
 "use strict";
 (() => {
   class TileController {
-    constructor({ send, onTile, onStatus, onError }) {
+    constructor({ send, onTile, onStatus, onError, maxCacheTiles = 512 }) {
       this.send = send;
+      this.maxCacheTiles = maxCacheTiles;
       this.onTile = onTile;
       this.onStatus = onStatus;
       this.onError = onError;
@@ -79,7 +80,7 @@
     trim() {
       const protectedKeys = new Set(this.sequence.map((tile) => tile.key));
       for (const key of this.tiles.keys()) {
-        if (this.tiles.size <= Math.max(512, this.sequence.length)) break;
+        if (this.tiles.size <= Math.max(this.maxCacheTiles, this.sequence.length)) break;
         if (!protectedKeys.has(key)) this.tiles.delete(key);
       }
     }
