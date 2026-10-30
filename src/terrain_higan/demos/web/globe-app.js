@@ -393,7 +393,8 @@
     worker?.terminate();
     const options = new URLSearchParams(location.search);
     options.set("mobile", TerrainHiGAN.mobileView ? "1" : "0");
-    options.set("workers", TerrainHiGAN.inferenceWorkerCount(options));
+    options.delete("workers");
+    options.delete("threads");
     options.set("bundle", TerrainHiGAN.bundle);
     worker = new Worker(`./globe-worker.js?${options}`);
     worker.onerror = (event) => controller.fail(event.message || "Globe worker failed");
@@ -413,11 +414,10 @@
       }
       if (controller.failed || data.id !== controller.active?.id) return;
       if (data.type === "tile") {
-        element("backend").textContent =
-          data.provider.name === "wasm" ? "CPU / WASM" : "WebGPU + WASM";
-        element("backend").title =
-          "Shared ONNX runtime policy: WASM z0–z15; optional WebGPU z16–z20";
-        element("threads").textContent = `${data.metrics.inferenceWorkers} × 1`;
+        element("backend").textContent = data.provider.name === "wasm" ? "CPU / WASM" : "WebGPU";
+        element("backend").title = data.provider.detail || "";
+        element("threads").textContent =
+          data.provider.name === "webgpu" ? "GPU queue" : "1 CPU thread";
         Object.assign(canvas.dataset, {
           modelRuns: data.metrics.modelRuns,
           cacheBytes: data.metrics.cacheBytes,

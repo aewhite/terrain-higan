@@ -8,7 +8,7 @@ importScripts(
     "terrain-common.js",
     "noise.js",
     "terrain.js",
-    "inference-pool.js",
+    "inference-runtime.js",
     "globe-topology.js",
     "globe-terrain.js",
   ].map((file) => versioned("./" + file)),
@@ -16,7 +16,7 @@ importScripts(
 
 (() => {
   const emit = (message, transfers) => postMessage(message, transfers);
-  const runtime = new TerrainHiGAN.InferencePool(options, emit);
+  const runtime = TerrainHiGAN.createInferenceRuntime(options, emit);
   const run = runtime.run.bind(runtime);
   runtime.run = async (model, inputs, assertCurrent) => {
     const result = await run(model, inputs, assertCurrent);
@@ -97,7 +97,7 @@ importScripts(
           ...tile,
           values: tile.values.buffer,
           vertexValues: tile.vertexValues.buffer,
-          provider: { name: runtime.providers.get(tile.model) || "wasm" },
+          provider: runtime.providers.get(tile.model),
           metrics: {
             ...runtime.metrics,
             cacheBytes: generator.cache.bytes,

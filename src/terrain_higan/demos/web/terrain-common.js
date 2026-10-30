@@ -28,12 +28,6 @@ globalThis.TerrainHiGAN ||= {};
     return mobile ? Math.min(2, ratio) : ratio;
   }
 
-  function inferenceWorkerCount(options, device = globalThis.navigator) {
-    // Each worker owns an ONNX runtime and its model sessions.
-    const mobile = isMobileDevice(device);
-    return Math.max(1, Math.min(4, Math.trunc(Number(options.get("workers")) || (mobile ? 1 : 4))));
-  }
-
   function validateRegion(region) {
     for (const key of ["zoom", "x", "y", "width", "height"]) {
       if (!Number.isSafeInteger(region[key])) throw new RangeError(key + " must be a safe integer");
@@ -116,7 +110,6 @@ globalThis.TerrainHiGAN ||= {};
     parseSeed,
     isMobileDevice,
     displayPixelRatio,
-    inferenceWorkerCount,
     validateRegion,
     parentRegion,
     padRegion,

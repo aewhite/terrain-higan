@@ -5,14 +5,14 @@ const bundle = runtimeOptions.get("bundle");
 const versioned = (file) => (bundle ? `${file}?bundle=${bundle}` : file);
 if (!globalThis.crypto?.subtle) importScripts(versioned("./assets/runtime/sha256.js"));
 importScripts(
-  ...["terrain-common.js", "noise.js", "inference-pool.js", "terrain.js", "rendering.js"].map(
+  ...["terrain-common.js", "noise.js", "inference-runtime.js", "terrain.js", "rendering.js"].map(
     (file) => versioned("./" + file),
   ),
 );
 
 (() => {
   const {
-    InferencePool,
+    createInferenceRuntime,
     TerrainGenerator,
     validateRegion,
     padRegion,
@@ -123,7 +123,7 @@ importScripts(
 
   TerrainHiGAN.createWorkerHandler = createWorkerHandler;
   const emit = (message, transfers) => postMessage(message, transfers);
-  const runtime = new InferencePool(runtimeOptions, emit);
+  const runtime = createInferenceRuntime(runtimeOptions, emit);
   const mobile = runtimeOptions.get("mobile") === "1";
   const cache = mobile
     ? new TerrainHiGAN.RegionCache(16 * 1024 * 1024, 1024)

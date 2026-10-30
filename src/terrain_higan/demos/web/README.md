@@ -32,7 +32,7 @@ the infinite map's locations or real Earth's continents.
 Run `npm ci` and `npm run sync-models` in this directory after updating. Installation
 also copies pinned Three.js browser assets and their licenses into the
 ignored runtime directory. Rendering requires WebGL2. Inference uses the
-WASM/WebGPU provider policy: WASM through z15 and optional WebGPU at z16–z20.
+WebGPU-first provider policy at every level, with WASM as the fallback.
 The globe supports the full z0–z20 hierarchy.
 
 - Pinch with two fingers to zoom and pan on touch screens. Lifting one finger
@@ -191,7 +191,7 @@ Timings are diagnostic, not machine-dependent pass/fail thresholds.
 Source boundaries: `globe-topology.js` defines coordinates/units/geodesics;
 `globe-mesh.js` reconciles shared mesh edges and corners;
 `globe-terrain.js` owns spherical model blocks and reconciliation;
-`globe-worker.js` coordinates generation through the shared inference pool;
+`globe-worker.js` coordinates generation and one serialized ONNX runtime;
 `globe-tile-controller.js` schedules adaptive tiles and their display cache;
 `globe-renderer.js` owns Three.js meshes, picking, lighting, and overlays;
 `globe-app.js` owns DOM, input, URLs, and readouts.
@@ -217,23 +217,29 @@ same coordinate-addressed Philox algorithm used by `terrain_higan.inference`. Ma
 seeds alone do not promise identical neural terrain across providers or other
 inference implementations; small rounding differences can grow through repeated upscaling.
 
-Desktop browsers default to four independent inference workers; phones and tablets
-default to one to limit WASM and model-session memory. Mobile uses the smaller
-CPU-only WASM build, 128px map tiles and sequential 32px inference patches in
-both views. It retains at most four model sessions, releases older sessions,
-disables per-session memory arenas, and bounds the generated-terrain cache to
-16 MiB. Mobile also uses a generated WASM loader capped at a 256 MiB shared-memory
-maximum (the upstream loader requests 4 GiB), and prepares globe dependencies
-sequentially to avoid retaining a large queued dependency tree. The loader
-transformation is checked against the pinned ONNX Runtime package. Smaller
-inference windows preserve the model halo and pixel-shuffle phase. Use `?workers=1` to select
-the lower-memory path explicitly, or `?workers=2` through `?workers=4` to override it.
-The inference workers load ONNX Runtime Web from `assets/runtime/` and z0 through
-z10 plus z11s through z20s exported checkpoints from `assets/models/`. The WebGPU
-mode uses WASM for z0 through z15, then WebGPU for z16 through z20 when available.
-This keeps the coarse parent terrain consistent across backends: tiny provider
-rounding differences in the early models otherwise grow into kilometer-scale
-differences after repeated upscaling. The WASM mode uses WASM at every level.
+Both viewers use one terrain worker with one ONNX Runtime instance and one serial
+inference queue. WebGPU is preferred for every model, including z0 and mobile.
+There are no nested inference workers or separate runtimes competing for the GPU,
+and model inputs/results stay in the terrain worker instead of being copied or
+transferred between workers. ONNX WASM threading stays at one; the legacy
+`workers` and `threads` query parameters are ignored.
+
+Mobile retains 128px map display tiles, a 16 MiB terrain cache, at most four model
+sessions, and bounded dependency preparation. WebGPU runs whole inference blocks.
+Only the mobile WASM fallback splits output into 32px patches and disables CPU
+memory arenas. Its windows preserve the model halo and pixel-shuffle phase.
+Generated mobile loaders cap the shared-memory reservation at 256 MiB for both
+the CPU and WebGPU/JSEP builds, replacing the upstream 4 GiB maximum. The loader
+transformation is checked against the pinned ONNX Runtime package.
+
+The worker loads the WebGPU ONNX bundle when that API is available, otherwise the
+smaller CPU bundle. ONNX’s WebGPU build also loads a WASM support module for
+runtime bookkeeping. See the [ONNX Runtime WebGPU guide](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html). Models come from `assets/models/`: z0 through z10 and z11s
+through z20s. A model that cannot initialize on WebGPU falls back to WASM. The
+Compute tooltip reports the actual provider or fallback reason. Switching from
+WASM parents to WebGPU can change the generated world for an existing seed;
+results are reproducible within the chosen backend, not identical across providers.
+
 z11 through z20 use their corresponding checkpoints, trained on z10 patches with
 each patch's deviations scaled around its preserved mean. Each export embeds its
 own measured residual scale, residual bounds, and elevation bounds from
@@ -322,14 +328,12 @@ changed ONNX files. The viewer shows its short ID and reloads when that ID chang
 sessions and elevation caches held by an older browser tab. The worker also
 checks each ONNX file against the active bundle before opening a session.
 Model bytes are fetched with `cache: "no-store"`; loaded sessions are reused in
-each inference worker's memory. Each worker lazily opens only the models required
+the terrain worker's memory. The worker lazily opens only the models required
 by the current zoom level while the page shell remains responsive.
 
 Only model output is rendered. If WebGPU initialization fails, the worker retries
 with the WASM CPU backend. If inference still fails, the actual error remains
 visible and no procedural terrain is substituted.
-All workers must select the same provider for each model; a mismatch is reported
-as an inference error.
 
 The main metrics show render state, visible tile progress, and elevation statistics.
 The title's indicator is yellow while rendering and green when the view is ready;
@@ -337,21 +341,12 @@ failures turn it red and show the error in the State row. Both viewers show the
 world seed in the main panel. Without a seed in the URL, the current timestamp in
 milliseconds becomes the seed; clearing the seed field also selects a new timestamp.
 The selected seed is saved in the URL for reproducible links and reloads.
-Advanced contains the Compute provider, Threads readout, current Model, and weights bundle.
-Threads shows the worker count and one CPU thread per worker.
-Each inference worker uses one WASM thread. The pinned runtime's threaded convolutions round
-differently for different region shapes; repeated upscaling can amplify this into
-visible coastline breaks between neighboring tiles. The `threads` query parameter
-is ignored. Desktop browsers default to four workers (the maximum); phones and
-tablets default to one. `?workers=1` or `?workers=2` explicitly selects the pool size.
-Each runtime owns its model sessions and WASM memory, while elevation blocks and
-pending claims remain in the coordinator. Parent dependencies
-are assembled before dispatching inference, so workers never wait for other jobs
-in the pool. Only assembled input buffers are transferred to inference workers;
-canonical cache buffers remain owned by the coordinator. Cancelled display requests
-return promptly; the current bounded batch of block producers can finish and warm
-the shared cache for subsequent requests.
-Hover over Compute for the provider split or GPU fallback reason.
+Advanced contains the Compute provider, execution readout, current Model, and
+weights bundle. Generation, noise, caching, and ONNX execution stay off the main
+UI thread. The inference queue serializes session loading, execution, and mobile
+session eviction. Cancellation skips obsolete queued work; an active model call
+can finish and populate reusable cache blocks. The CPU fallback yields between
+model calls so cancellation messages can be handled without another worker.
 For diagnosis, `?backend=wasm` forces CPU inference at every level.
 
 Start the local server from the repository root:
@@ -367,7 +362,7 @@ Pass another port as an argument if needed, for example
 both `.js` and `.mjs`, which the ONNX WASM module requires.
 It also supplies `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. Other static hosts must send these
-headers for cross-origin isolation. Each inference worker still uses one CPU thread.
+headers for cross-origin isolation. The terrain worker uses one CPU thread for WASM fallback.
 
 ### HTTPS on the LAN
 
@@ -406,11 +401,10 @@ npm run format:check
 Tests live under [`tests/web/`](../../../../tests/web/) and are documented in the
 [testing guide](../../../../tests/README.md). The runner starts and stops the browser
 test server automatically unless `DEMO_URL` is set. Browser tests check native Retina
-dimensions, four independent single-thread runtimes, visible terrain during zoom,
+dimensions, one serialized ONNX runtime, visible terrain during zoom,
 cached zoom-out, and consistency between neighboring coastline tiles and a
-continuous request. `SEAM_ONLY=1` checks worker-count invariance, halo/colormap
-invariance, cached crops, cancellation, and the coastline regression, and reports
-one-worker and four-worker cold and warm timings. Large Retina views can take longer to
+continuous request. `SEAM_ONLY=1` checks cache-history and halo/colormap
+invariance, cached crops, cancellation, and the coastline regression. Large Retina views can take longer to
 generate than small views.
 The measurement check verifies mouse and touch
 distances at device pixel ratios 1 and 2, meter/kilometer units, anchored endpoints,
@@ -434,10 +428,10 @@ checks that a z20 tile is identical after warming the cache in a separate worker
   composes generation/rendering. Cancellation releases the display request while
   bounded shared block production finishes. Obsolete replies cannot
   release a newer request or become current display tiles.
-- `inference-pool.js` queues ready inference jobs across independent runtimes.
-  `inference-worker.js` owns each runtime's execution and transferable inputs/outputs.
+- `inference-runtime.js` initializes ONNX inside the terrain worker and serializes
+  ready model calls without nested workers or input/output transfer copies.
 - `model-runtime.js` owns model verification, sessions, provider selection, and
-  timing inside each inference worker. Each tile carries its resolved model and provider.
+  timing inside the terrain worker. Each tile carries its resolved model and provider.
 - `terrain.js` owns block recursion, pending claims, canonical region assembly,
   and the shared block LRU. Stored buffers are owned copies; messages transfer
   separate assembled or cropped buffers.

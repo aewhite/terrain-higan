@@ -100,48 +100,8 @@ const assert = require("node:assert/strict");
   assert.deepEqual((await sharedGenerator.tile(1n, 0, 5, 16, 16)).values, tile.values);
   assert.equal(sharedRuntime.runs.length, cachedRuns, "completed shared blocks remain reusable");
 
-  let worker;
-  const pool = new api.InferencePool(
-    new URLSearchParams("workers=1"),
-    () => {},
-    () => {
-      worker = {
-        messages: [],
-        postMessage(message) {
-          this.messages.push(message);
-        },
-        terminate() {},
-      };
-      return worker;
-    },
-  );
-  const model = await pool.sessionFor(0);
-  const inputs = () => ({ noise: pool.tensor(new Float32Array([0]), [1, 1, 1, 1]) });
-  const running = pool.run(model, inputs());
-  obsolete = false;
-  const discarded = assert.rejects(pool.run(model, inputs(), assertCurrent), ObsoleteGlobeRequest);
-  const latest = pool.run(model, inputs());
-  obsolete = true;
-  const reply = (message) =>
-    worker.onmessage({
-      data: {
-        id: message.id,
-        type: "result",
-        model: "z0",
-        provider: { name: "wasm", detail: "test" },
-        values: new Float32Array([0]).buffer,
-        dims: [1, 1, 1, 1],
-        inferenceMs: 1,
-      },
-    });
-  reply(worker.messages[0]);
-  assert.equal(worker.messages.length, 2);
-  assert.equal(worker.messages[1].id, 3, "queued obsolete inference is skipped before dispatch");
-  reply(worker.messages[1]);
-  await Promise.all([running, discarded, latest]);
-  assert.equal(pool.queue.length, 0);
   console.log(
-    "Globe cancellation stops dependency chains and queued inference, preserves shared retries, and reuses completed blocks",
+    "Globe cancellation stops dependency chains, preserves shared retries, and reuses completed blocks",
   );
 })().catch((error) => {
   console.error(error);

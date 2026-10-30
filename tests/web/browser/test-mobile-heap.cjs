@@ -35,7 +35,7 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
           }
         };
       });
-      await page.route("**/inference-worker.js?*", async (route) => {
+      await page.route(/\/(?:model-worker|globe-worker)\.js\?/, async (route) => {
         const response = await route.fetch();
         const source = await response.text();
         const guard = `

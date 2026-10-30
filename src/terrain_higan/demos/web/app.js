@@ -352,7 +352,7 @@
     canvas.dataset.cacheHits = data.metrics.cacheHits;
     canvas.dataset.tileModelRuns = data.metrics.tileModelRuns;
     canvas.dataset.inferenceWorkers = data.metrics.inferenceWorkers;
-    ui.threads.textContent = `${data.metrics.inferenceWorkers} (${data.metrics.inferenceWorkers} workers x 1)`;
+    ui.threads.textContent = data.provider.name === "webgpu" ? "GPU queue" : "1 CPU thread";
     canvas.dataset.maxParallelRuns = data.metrics.maxParallelRuns;
     canvas.dataset.coalescedBlocks = data.metrics.coalescedBlocks;
     const result = {
@@ -376,7 +376,7 @@
     ui.backend.textContent = provider
       ? provider.name === "wasm"
         ? "CPU / WASM"
-        : "WebGPU + WASM"
+        : "WebGPU"
       : "Loading";
     ui.backend.title = provider?.detail || "";
     canvas.dataset.gpuError = provider?.detail || "";
@@ -792,7 +792,8 @@
     ui.bundle.title = `Model bundle ${modelBundle}`;
     const workerOptions = new URLSearchParams(location.search);
     workerOptions.set("mobile", TerrainHiGAN.mobileView ? "1" : "0");
-    workerOptions.set("workers", TerrainHiGAN.inferenceWorkerCount(workerOptions));
+    workerOptions.delete("workers");
+    workerOptions.delete("threads");
     workerOptions.set("bundle", modelBundle);
     modelWorker = new Worker(`./model-worker.js?${workerOptions}`);
     modelWorker.onerror = (event) => failModel(event.message || "Worker initialization failed");

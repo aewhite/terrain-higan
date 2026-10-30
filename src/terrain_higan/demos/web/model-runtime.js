@@ -1,8 +1,6 @@
 "use strict";
 (() => {
   const { modelName } = TerrainHiGAN;
-  // Early rounding differences grow through repeated upscaling; keep coarse parents canonical.
-  const CANONICAL_PARENT_MAX_ZOOM = 15;
 
   class ModelRuntime {
     constructor(ort, options, emit) {
@@ -82,14 +80,9 @@
         phase: "initialize",
         message: `Load ${name}`,
       });
-      const cpuSelected = this.lowMemory || this.options.get("backend") === "wasm";
-      const useWasm = cpuSelected || zoom <= CANONICAL_PARENT_MAX_ZOOM;
-      let detail = cpuSelected
-        ? "CPU selected"
-        : useWasm
-          ? `WASM z0-z${CANONICAL_PARENT_MAX_ZOOM} keeps parent terrain consistent across backends`
-          : "WebGPU API unavailable";
-      if (!useWasm && self.navigator?.gpu) {
+      const cpuSelected = this.options.get("backend") === "wasm";
+      let detail = cpuSelected ? "CPU selected" : "WebGPU API unavailable";
+      if (!cpuSelected && self.navigator?.gpu) {
         try {
           const session = await this.ort.InferenceSession.create(model, {
             executionProviders: ["webgpu"],
@@ -99,8 +92,8 @@
             name,
             provider: {
               name: "webgpu",
-              label: "WebGPU + WASM",
-              detail: `WASM z0-z${CANONICAL_PARENT_MAX_ZOOM}; WebGPU z${CANONICAL_PARENT_MAX_ZOOM + 1}-z20`,
+              label: "WebGPU",
+              detail: "WebGPU inference",
             },
           };
         } catch (error) {
@@ -179,13 +172,14 @@
         message: `Generate ${model.name}`,
       });
       const start = performance.now();
-      const output = this.lowMemory
-        ? await this.runSmallPatches(model, inputs)
-        : await model.session.run(inputs);
+      const output =
+        this.lowMemory && model.provider.name === "wasm"
+          ? await this.runSmallPatches(model, inputs)
+          : await model.session.run(inputs);
       this.metrics.modelRuns++;
       this.metrics.inferenceMs += performance.now() - start;
       return output;
     }
   }
-  Object.assign(TerrainHiGAN, { ModelRuntime, CANONICAL_PARENT_MAX_ZOOM });
+  Object.assign(TerrainHiGAN, { ModelRuntime });
 })();

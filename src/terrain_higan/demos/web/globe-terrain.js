@@ -135,7 +135,7 @@
       const entries = [...regions];
       // Limit dependency production too: one inference worker alone does not
       // bound the tensors retained by an eagerly prepared dependency tree.
-      const batchSize = this.runtime.lowMemory ? 1 : Math.max(1, entries.length);
+      const batchSize = this.runtime.size || 1;
       for (let index = 0; index < entries.length; index += batchSize) {
         assertCurrent();
         const batch = await Promise.all(

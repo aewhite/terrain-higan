@@ -146,12 +146,7 @@ class CDP {
           );
           const instrumentation = snapshot.result.value ? JSON.parse(snapshot.result.value) : null;
           if (!instrumentation) continue;
-          const role =
-            s.target.type === "page"
-              ? "page"
-              : s.target.url.includes("inference-worker")
-                ? "inference"
-                : "coordinator";
+          const role = s.target.type === "page" ? "page" : "terrain";
           const id = result.length;
           fs.writeFileSync(
             path.join(output, `${name}-${role}-${id}.cpuprofile`),
@@ -304,8 +299,8 @@ function instrument(file, source) {
       ["tile", "noise", "gather", "rawBlock", "finalBlock", "vertices"],
       "globeTerrain",
     );
-  if (file === "inference-pool.js")
-    wrap("TerrainHiGAN.InferencePool.prototype", ["run", "dispatch", "receive"], "pool");
+  if (file === "inference-runtime.js")
+    wrap("TerrainHiGAN.InferenceRuntime.prototype", ["run"], "queue");
   if (file === "tile-controller.js")
     wrap(
       "TerrainHiGAN.TileController.prototype",
@@ -362,6 +357,8 @@ const percentile = (values, q) => {
 async function state(page) {
   return page.evaluate(() => ({
     status: document.querySelector("#status").textContent,
+    backend: document.querySelector("#backend").textContent,
+    backendDetail: document.querySelector("#backend").title,
     canvas: { width: world.width, height: world.height, ...world.dataset },
     zoom: new URLSearchParams(location.hash.slice(1)).get("z"),
   }));
@@ -762,7 +759,7 @@ async function main() {
         mobile: false,
         viewport: { width: 1280, height: 800 },
         dpr: 1,
-        workers: 4,
+        workers: 1,
       },
       { name: "mobile", mobile: true, viewport: { width: 375, height: 812 }, dpr: 2, workers: 1 },
     ];

@@ -17,17 +17,22 @@ for (const file of runtimeFiles)
   fs.copyFileSync(path.join(sourceDir, file), path.join(destinationDir, file));
 // The pinned Emscripten loader reserves shared memory up to a 4 GiB maximum.
 // Keep the mobile runtime's reservation bounded independently of model tile size.
-const wasmLoader = fs.readFileSync(path.join(sourceDir, "ort-wasm-simd-threaded.mjs"), "utf8");
 const memoryDeclaration = "new WebAssembly.Memory({initial:256,maximum:65536,shared:!0})";
-if (wasmLoader.split(memoryDeclaration).length !== 2)
-  throw new Error("ONNX Runtime memory declaration changed; review the mobile memory limit.");
-fs.writeFileSync(
-  path.join(destinationDir, "ort-wasm-mobile.mjs"),
-  wasmLoader.replace(
-    memoryDeclaration,
-    "new WebAssembly.Memory({initial:256,maximum:4096,shared:!0})",
-  ),
-);
+for (const suffix of ["", ".jsep"]) {
+  const wasmLoader = fs.readFileSync(
+    path.join(sourceDir, `ort-wasm-simd-threaded${suffix}.mjs`),
+    "utf8",
+  );
+  if (wasmLoader.split(memoryDeclaration).length !== 2)
+    throw new Error("ONNX Runtime memory declaration changed; review the mobile memory limit.");
+  fs.writeFileSync(
+    path.join(destinationDir, `ort-wasm-mobile${suffix}.mjs`),
+    wasmLoader.replace(
+      memoryDeclaration,
+      "new WebAssembly.Memory({initial:256,maximum:4096,shared:!0})",
+    ),
+  );
+}
 fs.copyFileSync(require.resolve("js-sha256"), path.join(destinationDir, "sha256.js"));
 const threeDir = path.resolve(path.dirname(require.resolve("three")), "..");
 for (const file of ["three.module.js", "three.core.js"])
