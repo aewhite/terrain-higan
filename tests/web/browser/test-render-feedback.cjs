@@ -11,10 +11,36 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
     }),
   );
   try {
-    for (const view of ["", "globe.html"]) {
-      const page = await browser.newPage({ viewport: { width: 400, height: 320 } });
+    for (const [view, mobile] of [
+      ["", false],
+      ["globe.html", false],
+      ["globe.html", true],
+    ]) {
+      const page = await browser.newPage(
+        mobile
+          ? { viewport: { width: 375, height: 812 }, hasTouch: true, deviceScaleFactor: 2 }
+          : { viewport: { width: 400, height: 320 } },
+      );
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
+      if (view) {
+        await page.addInitScript(() => {
+          const NativeWorker = Worker;
+          let released = false;
+          globalThis.pendingRefinements = [];
+          globalThis.releaseRefinements = () => {
+            released = true;
+            for (const resume of pendingRefinements.splice(0)) resume();
+          };
+          globalThis.Worker = class extends NativeWorker {
+            postMessage(message, ...transfer) {
+              if (message.type === "tile" && message.depth > 0 && !released)
+                pendingRefinements.push(() => super.postMessage(message, ...transfer));
+              else super.postMessage(message, ...transfer);
+            }
+          };
+        });
+      }
       let releaseModel, releaseRuntime;
       const modelGate = new Promise((r) => (releaseModel = r)),
         runtimeGate = new Promise((r) => (releaseRuntime = r));
@@ -52,6 +78,28 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
       );
       assert.equal(await page.locator("#render-progress-value").getAttribute("value"), null);
       releaseRuntime();
+      if (view) {
+        await page.waitForFunction(
+          () => document.getElementById("world").dataset.previewReady === "true",
+          {},
+          { timeout: 120000 },
+        );
+        assert.equal(await page.locator("#world").getAttribute("data-loading-planet"), "false");
+        assert.equal(await page.locator("#world").getAttribute("data-ready"), "false");
+        assert.equal(await page.locator("#world").getAttribute("data-render-stage"), "refining");
+        assert.equal(await page.locator("#world").getAttribute("data-max-model-level"), "2");
+        assert(await page.locator("#render-progress").isVisible());
+        assert.match(await page.locator("#render-progress-label").innerText(), /Refining/);
+        assert.equal(await page.locator("#status").innerText(), "Loading");
+        assert.equal(await page.evaluate(() => pendingRefinements.length), 1);
+        // A held refinement cannot erase the preview or prematurely report Ready.
+        await page.evaluate(
+          () =>
+            new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+        );
+        assert.equal(await page.locator("#world").getAttribute("data-loading-planet"), "false");
+        await page.evaluate(() => releaseRefinements());
+      }
       await page.waitForFunction(
         () => document.querySelector("#status").textContent === "Ready",
         {},
@@ -119,7 +167,7 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
       await page.close();
     }
     console.log(
-      "Render feedback: model download, runtime initialization, completed/new work visibility, and full-width accurate scale, visible mobile errors and explicit retry in both views",
+      "Render feedback: download/runtime phases, coarse globe preview before fine tiles on desktop/mobile, completed/new work visibility, full-width scale, mobile errors and explicit retry",
     );
   } finally {
     await browser.close();

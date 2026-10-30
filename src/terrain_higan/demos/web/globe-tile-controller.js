@@ -152,6 +152,9 @@
       this.renderer.show(display, patches);
       this.onState({
         ready: !this.sequence.length,
+        // Root tiles already provide a complete coarse surface. Show it while
+        // the requested leaves continue to replace their ancestor's data.
+        previewReady: patches.length > 0 && patches.length === this.selection.leaves.length,
         pending: this.sequence.length,
         visible: patches.length,
         cached: this.tiles.size,

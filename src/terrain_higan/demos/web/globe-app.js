@@ -297,7 +297,10 @@
     renderer,
     (data) => worker.postMessage(data),
     (status) => {
-      if (status.ready) initialGlobeReady = true;
+      if (!initialGlobeReady && (status.previewReady || status.ready)) {
+        initialGlobeReady = true;
+        if (!status.ready) TerrainHiGAN.setRenderPhase("Refining");
+      }
       renderer.setLoading(!initialGlobeReady && !walk?.active);
       TerrainHiGAN.setRenderProgress(
         status.ready ? 1 : status.visible,
@@ -332,6 +335,12 @@
       canvas.dataset.visibleTiles = status.visible;
       canvas.dataset.cachedTiles = status.cached;
       canvas.dataset.ready = status.ready;
+      canvas.dataset.previewReady = status.previewReady;
+      canvas.dataset.renderStage = status.ready
+        ? "ready"
+        : initialGlobeReady
+          ? "refining"
+          : "preview";
       canvas.dataset.tileCapacity = status.capacity;
       canvas.dataset.targetModelLevel = status.targetLevel;
       canvas.dataset.samplePixels = status.samplePixels;

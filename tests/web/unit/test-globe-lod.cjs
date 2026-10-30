@@ -17,6 +17,55 @@ const vm = require("node:vm");
     context,
   );
   const globe = api.globe;
+  const previewStates = [],
+    previewRequests = [];
+  const previewRenderer = {
+    camera: { position: {} },
+    selectionKey: "overview",
+    bounds: (tile) => ({ ...tile, center: { distanceTo: () => 0 } }),
+    visible: (bounds) => bounds.face < 2,
+    span: (bounds) => 256 / 2 ** bounds.depth,
+    prepareView() {},
+    show() {},
+    dispose() {},
+  };
+  const previewController = new globe.GlobeTileController(
+    previewRenderer,
+    (request) => previewRequests.push(request),
+    (status) => previewStates.push(status),
+  );
+  const reply = () =>
+    previewController.receive({
+      ...previewController.active,
+      type: "tile",
+      level: previewController.active.depth + 2,
+      values: new Float32Array(68 * 68).buffer,
+      vertexValues: new Float32Array(67 * 67).buffer,
+    });
+  previewController.reset("1");
+  assert.equal(previewStates.at(-1).previewReady, false);
+  reply();
+  assert.equal(previewStates.at(-1).previewReady, false, "one face leaves a partial preview");
+  assert.equal(previewController.active.depth, 0, "visible roots precede fine inference");
+  reply();
+  assert.equal(previewStates.at(-1).previewReady, true, "coarse roots cover the visible globe");
+  assert.equal(previewStates.at(-1).ready, false, "preview completion does not imply full detail");
+  assert(previewController.active.depth > 0, "refinement starts automatically");
+  assert(previewController.patches.every((patch) => patch.source.depth === 0));
+  const rootRequests = previewRequests.filter((request) => request.depth === 0).length;
+  while (previewController.active) {
+    reply();
+    assert.equal(previewStates.at(-1).previewReady, true, "refinement retains full coverage");
+  }
+  assert.equal(previewStates.at(-1).ready, true);
+  assert(previewController.patches.every((patch) => patch.source.depth === patch.depth));
+  assert.equal(
+    previewRequests.filter((request) => request.depth === 0).length,
+    rootRequests,
+    "refinement reuses the preview roots",
+  );
+  previewController.reset("2");
+  assert.equal(previewStates.at(-1).previewReady, false, "a new seed resets preview coverage");
   for (const [samplePixels, expectedDepth] of [
     [1.01, 0],
     [1.4, 0],

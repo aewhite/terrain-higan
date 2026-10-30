@@ -37,7 +37,9 @@ The globe supports the full z0–z20 hierarchy.
 
 - Pinch with two fingers to zoom and pan on touch screens. Lifting one finger
   resumes rotation; pinching does not place distance measurements.
-- A blank shaded planet appears while initial terrain is loading.
+- A blank shaded planet appears while the first coarse tiles load. Once those
+  tiles cover the visible globe, the planet shows generated terrain immediately
+  and refines it in place. The progress bar stays visible until full detail is ready.
 - Drag to carry the grabbed surface location with the pointer. Movement naturally
   slows as ground resolution increases. Wheel zoom follows the pointer; `+` and
   `-` zoom at the center. Zoom stops at native z20 resolution, with clearance
