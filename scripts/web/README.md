@@ -5,9 +5,16 @@ Run from the project root with Node 22+ and the web demo dependencies installed:
 ```sh
 node scripts/web/profile-demo.cjs --deep --out runs/web-profile/local
 node scripts/web/profile-demo.cjs --control --out runs/web-profile/local
+node scripts/web/profile-demo.cjs --control --only desktop-map --batch 4 --out runs/web-profile/batch4-map
 ```
 
 The default Chrome path is the local macOS installation. Select another installed browser with `--chrome /path/to/chrome` or `CHROME_PATH`. Use `--only desktop-map`, `desktop-globe`, `mobile-map`, or `mobile-globe` to isolate one case. Current model assets must pass the demo's `sync-models.cjs --check`.
+
+Use `--batch 1`, `2`, `4`, or `8` to override the desktop WebGPU batch limit.
+Batch 1 also disables tile lookahead. Mobile and WASM always use single-input
+inference. Compare runs sequentially so they do not compete for the same GPU.
+Control snapshots include the canvas batching counters; physical ONNX call counts
+are distinct from the number of generated canonical blocks.
 
 The script starts a separate loopback server, launches a fresh browser for each case, and stops both when finished. It profiles the current initial view, cached panning, and zooming into new detail. `--deep` adds a globe view at 1 km altitude. Mobile emulates viewport, DPR, touch capability, and the demo's memory-saving configuration on the host computer; it does not reproduce phone hardware performance. Navigation uses deterministic mouse/keyboard input, including in the mobile configuration; this is not a pinch-gesture benchmark.
 

@@ -13,6 +13,8 @@
       this.sequence = [];
       this.display = [];
       this.active = null;
+      this.queued = [];
+      this.pipelineSize = 1;
       this.nextId = 0;
       this.failed = false;
       this.seed = "";
@@ -42,6 +44,7 @@
       this.tiles.clear();
       this.tilesVersion++;
       this.active = null;
+      this.queued = [];
       this.failed = false;
       this.seed = seed;
       this.update();
@@ -122,9 +125,13 @@
             if (node.children?.some((child) => !this.nodes.has(child.key))) delete node.children;
         }
       }
-      if (this.active && !this.selection.wanted.has(this.active.key)) {
+      if (
+        this.active &&
+        [this.active, ...this.queued].some((node) => !this.selection.wanted.has(node.key))
+      ) {
         this.send({ type: "cancel" });
         this.active = null;
+        this.queued = [];
       }
       for (const node of this.selection.required.values())
         if (node.depth === 0 || this.renderer.visible(node.bounds)) protect.add(node.key);
@@ -196,19 +203,33 @@
       if (this.failed || this.active || !this.sequence.length) return;
       const node = this.sequence[0];
       this.active = { ...node, id: ++this.nextId };
+      this.queued = this.sequence
+        .slice(1, this.pipelineSize)
+        .map((next) => ({ ...next, id: this.active.id }));
       this.send({
         type: "tile",
         seed: this.seed,
         ...this.active,
         bounds: undefined,
         children: undefined,
+        ...(this.queued.length
+          ? {
+              ahead: this.queued.map(({ face, depth, tileX, tileY, key }) => ({
+                face,
+                depth,
+                tileX,
+                tileY,
+                key,
+              })),
+            }
+          : {}),
       });
     }
 
     receive(data, update = true) {
       if (!this.active || data.id !== this.active.id || data.key !== this.active.key) return;
       const node = this.active;
-      this.active = null;
+      this.active = this.queued.shift() || null;
       if (data.type === "error") {
         this.fail(data.message);
         return;
@@ -232,6 +253,8 @@
     }
 
     fail(message) {
+      this.queued = [];
+      this.active = null;
       this.failed = true;
       this.onState({ error: message });
     }

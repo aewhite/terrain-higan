@@ -8,6 +8,7 @@ const { loadModules } = require("../support/test-support.cjs");
     events = {},
     messages = [];
   const { api, context, load } = loadModules({
+    navigator: { userAgent: "iPhone" },
     performance: { now: () => now },
     requestAnimationFrame(callback) {
       frames.set(++frameId, callback);
@@ -69,6 +70,27 @@ const { loadModules } = require("../support/test-support.cjs");
       assert.equal(message.delayMs, 0);
     },
   });
+
+  const desktop = loadModules({
+    performance: { now: () => 0 },
+    requestAnimationFrame: () => 1,
+  });
+  desktop.load("refinement.js");
+  const desktopEvents = {};
+  const desktopPacing = new desktop.api.RefinementScheduler({
+    dataset: {},
+    addEventListener(type, callback) {
+      desktopEvents[type] = callback;
+    },
+  });
+  desktopPacing.setBusy(true);
+  desktopEvents.pointerdown({ type: "pointerdown" });
+  desktopPacing.observe(0);
+  desktopPacing.observe(16);
+  assert.equal(desktopPacing.delayMs, 0, "healthy desktop gestures have no fixed inference gap");
+  desktopPacing.observe(60);
+  assert(desktopPacing.delayMs > 0, "desktop frame pressure still throttles inference");
+  assert.equal(desktopPacing.meshBudgetMs, 1.5);
 
   // An active gesture never blocks the queue. Timers also give cancel messages
   // a chance to invalidate queued work before the next ONNX call.

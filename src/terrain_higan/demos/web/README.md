@@ -227,6 +227,18 @@ and model inputs/results stay in the terrain worker instead of being copied or
 transferred between workers. ONNX WASM threading stays at one; the legacy
 `workers` and `threads` query parameters are ignored.
 
+Desktop WebGPU combines up to four ready canonical blocks with matching models
+and input shapes into one ONNX batch. Calls remain serialized in the terrain
+worker; noise coordinates, block boundaries, and cache ownership stay unchanged.
+The viewers send up to three ordered tile requests at a time, allowing generation
+to continue between display frames while presentation still installs at most one
+replacement per animation frame. Navigation cancels obsolete groups.
+Mobile and WASM keep single-input inference and one tile request at a time.
+Use `?batch=1` to disable desktop batching and lookahead for comparison, or
+`?batch=2`, `?batch=4`, or `?batch=8` to select the desktop WebGPU batch limit.
+The canvas dataset exposes `maxBatchSize`, `batchedRuns`, and `inferenceBlocks`
+alongside the existing inference metrics.
+
 Mobile retains 128px map display tiles, a 16 MiB terrain cache, at most four model
 sessions, and bounded dependency preparation. WebGPU runs whole inference blocks.
 Only the mobile WASM fallback splits output into 32px patches and disables CPU
@@ -367,8 +379,9 @@ can finish and populate reusable cache blocks. The CPU fallback yields between
 model calls so cancellation messages can be handled without another worker.
 Both viewers monitor frame timing while rendering or interacting. Slow frames
 increase the gap between model calls up to 32ms; smooth frames restore throughput.
-Gestures retain continuous inference with a small gap between calls and reduce
-globe mesh preparation to a 1.5ms cooperative budget per frame. Individual model
+Mobile gestures retain continuous inference with at least a 4ms gap between calls.
+Healthy desktop gestures have no fixed gap; slow frames still activate pacing.
+Gestures reduce globe mesh preparation to a 1.5ms cooperative budget per frame. Individual model
 calls and uploads cannot be preempted. Monitoring stops when the viewer is idle.
 For diagnosis, `?backend=wasm` forces CPU inference at every level.
 
@@ -445,14 +458,16 @@ checks that a z20 tile is identical after warming the cache in a separate worker
 
 - `index.html` bootstraps bundle-versioned scripts; `styles.css` contains presentation.
 - `app.js` owns DOM/camera/URL wiring, drawing, and readouts.
-- `tile-controller.js` owns the display cache, visible tile queue, and single active
-  request. IDs identify requests even when navigation returns to the same tile key.
+- `tile-controller.js` owns the display cache, visible tile queue, and active
+  request group. IDs identify groups and keys identify their ordered replies,
+  even when navigation returns to the same tile key.
 - `model-worker.js` coordinates the shared cache, validates tagged requests, and
   composes generation/rendering. Cancellation releases the display request while
   bounded shared block production finishes. Obsolete replies cannot
   release a newer request or become current display tiles.
-- `inference-runtime.js` initializes ONNX inside the terrain worker and serializes
-  ready model calls without nested workers or input/output transfer copies.
+- `inference-runtime.js` initializes ONNX inside the terrain worker, batches
+  compatible desktop WebGPU inputs, and serializes model calls without nested
+  workers or input/output transfer copies between workers.
 - `model-runtime.js` owns model verification, sessions, provider selection, and
   timing inside the terrain worker. Each tile carries its resolved model and provider.
 - `terrain.js` owns block recursion, pending claims, canonical region assembly,
@@ -480,6 +495,11 @@ suite checks the real WASM worker, previews, errors, cancellation/navigation,
 desktop/mobile canvases, and bundle reloads. Screenshots go under
 `runs/demo-inference-refactor/`. The headed diagnostic checks actual WebGPU
 availability and reports the provider that produced each result.
+`test-webgpu-batching.cjs` compares batch sizes 1, 4, and 8 through z20, including
+spherical corner/edge collars and vertex samples. It requires identical raw
+values, checks cache-history independence and bounded desktop lookahead, and
+exercises navigation with one display upload per frame. Set `WEBGPU_REQUIRED=1`
+to fail instead of skipping its numerical checks when no GPU adapter is available.
 
 Code/model bundle updates show a Reload notice instead of automatically resetting
 the viewer. Reload when convenient to use the new bundle.

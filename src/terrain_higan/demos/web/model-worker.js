@@ -31,7 +31,7 @@ importScripts(
   function createWorkerHandler(runtime, generator, emit) {
     let newestRequestId = 0;
     let cancelActive = null;
-    return async ({ data }) => {
+    const receive = async ({ data }) => {
       if (data.type === "frame-budget") {
         runtime.setPacing(data.delayMs);
         return;
@@ -53,6 +53,10 @@ importScripts(
         return;
       }
       newestRequestId = Math.max(newestRequestId, data.id);
+      if (data.id !== newestRequestId) {
+        emit({ type: "cancelled", id: data.id, key: data.key });
+        return;
+      }
       const cancelled = new Promise((resolve) => {
         cancelActive = () => resolve(null);
       });
@@ -122,6 +126,13 @@ importScripts(
         else
           reply({ type: "error", message: error instanceof Error ? error.message : String(error) });
       }
+    };
+    return async (event) => {
+      await receive(event);
+      // Bounded desktop lookahead: finish up to two more tiles without a
+      // round trip through requestAnimationFrame. Replies keep ordered ownership.
+      for (const next of (event.data.ahead || []).slice(0, 2))
+        await receive({ data: { ...event.data, ...next, id: event.data.id, ahead: undefined } });
     };
   }
 

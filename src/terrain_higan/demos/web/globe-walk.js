@@ -387,9 +387,15 @@ class GlobeWalk {
       renderer = this.renderer;
     if (!this.selection) this.selection = this.select();
     controller.selection = this.selection;
-    if (controller.active && !this.selection.required.has(controller.active.key)) {
+    if (
+      controller.active &&
+      [controller.active, ...(controller.queued || [])].some(
+        (node) => !this.selection.required.has(node.key),
+      )
+    ) {
       controller.send({ type: "cancel" });
       controller.active = null;
+      controller.queued = [];
     }
     controller.sequence = this.selection.ordered.filter((node) => !controller.tiles.has(node.key));
     controller.capacity = Math.max(512, this.selection.required.size + 128);

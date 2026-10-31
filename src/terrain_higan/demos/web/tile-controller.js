@@ -10,6 +10,8 @@
       this.tiles = new Map();
       this.sequence = [];
       this.active = null;
+      this.queued = [];
+      this.pipelineSize = 1;
       this.requestId = 0;
       this.error = null;
       this.backend = "";
@@ -21,10 +23,15 @@
       this.identity = identity;
       if (
         this.active &&
-        !sequence.some((tile) => tile.key === this.active.key) &&
+        [this.active, ...this.queued].some(
+          (request) => !sequence.some((tile) => tile.key === request.key),
+        ) &&
         !this.active.cancelled
       ) {
         this.active.cancelled = true;
+        this.queued.forEach((request) => {
+          request.cancelled = true;
+        });
         this.phase = "cancelling";
         this.send({ type: "cancel", id: ++this.requestId });
       }
@@ -33,7 +40,8 @@
 
     dispatch() {
       if (this.error || this.active) return;
-      const tile = this.sequence.find((candidate) => !this.tiles.has(candidate.key));
+      const waiting = this.sequence.filter((candidate) => !this.tiles.has(candidate.key));
+      const tile = waiting[0];
       if (!tile) {
         this.phase = "ready";
         const provider = this.sequence
@@ -47,11 +55,14 @@
         return;
       }
       const request = { ...this.identity, ...tile, type: "generate", id: ++this.requestId };
+      this.queued = waiting
+        .slice(1, this.pipelineSize)
+        .map((next) => ({ ...this.identity, ...next, type: "generate", id: request.id }));
       this.active = request;
       this.phase = "generating";
       const loaded = this.sequence.filter((item) => this.tiles.has(item.key)).length;
       this.onStatus(`Generating ${loaded + 1} / ${this.sequence.length} · ${this.backend}`);
-      this.send(request);
+      this.send({ ...request, ...(this.queued.length ? { ahead: this.queued } : {}) });
     }
 
     receive(data, dispatch = true) {
@@ -63,7 +74,7 @@
       }
       if (!["tile", "cancelled", "error"].includes(data.type)) return;
       const obsolete = this.active.cancelled;
-      this.active = null;
+      this.active = this.queued.shift() || null;
       if (data.type === "error" && !obsolete) {
         this.fail(data.message);
         return;
@@ -86,8 +97,9 @@
     }
 
     fail(message) {
-      this.error = message;
+      this.queued = [];
       this.active = null;
+      this.error = message;
       this.phase = "failed";
       this.onError(message);
     }

@@ -18,6 +18,7 @@ const { values } = parseArgs({
     chrome: { type: "string" },
     deep: { type: "boolean", default: false },
     control: { type: "boolean", default: false },
+    batch: { type: "string" },
   },
 });
 const output = path.resolve(
@@ -403,7 +404,9 @@ async function runControl(config, view, base) {
     };
     await stage("startup", async () => {
       await page.goto(
-        base + (view === "globe" ? "globe.html" : "") + `?workers=${config.workers}#seed=4829347`,
+        base +
+          (view === "globe" ? "globe.html" : "") +
+          `?workers=${config.workers}${values.batch ? "&batch=" + encodeURIComponent(values.batch) : ""}#seed=4829347`,
       );
       await ready(page);
     });
@@ -559,7 +562,9 @@ async function runCase(config, view, base) {
       );
     };
     const url =
-      base + (view === "globe" ? "globe.html" : "") + `?workers=${config.workers}#seed=4829347`;
+      base +
+      (view === "globe" ? "globe.html" : "") +
+      `?workers=${config.workers}${values.batch ? "&batch=" + encodeURIComponent(values.batch) : ""}#seed=4829347`;
     await stage("startup", async () => {
       await page.goto(url);
       return ready(page);

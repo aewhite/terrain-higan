@@ -321,6 +321,12 @@
     });
   }
   function receiveTile(data, tile, identity) {
+    controller.pipelineSize =
+      !TerrainHiGAN.mobileView &&
+      data.provider.name === "webgpu" &&
+      new URLSearchParams(location.search).get("batch") !== "1"
+        ? 3
+        : 1;
     tileRevision++;
     const elevations = new Float32Array(data.elevations);
     ui.model.textContent = data.model;
@@ -331,6 +337,9 @@
     canvas.dataset.inferenceWorkers = data.metrics.inferenceWorkers;
     ui.threads.textContent = data.provider.name === "webgpu" ? "GPU queue" : "1 CPU thread";
     canvas.dataset.maxParallelRuns = data.metrics.maxParallelRuns;
+    canvas.dataset.maxBatchSize = data.metrics.maxBatchSize;
+    canvas.dataset.batchedRuns = data.metrics.batchedRuns;
+    canvas.dataset.inferenceBlocks = data.metrics.inferenceBlocks;
     canvas.dataset.coalescedBlocks = data.metrics.coalescedBlocks;
     const result = {
       ...tile,

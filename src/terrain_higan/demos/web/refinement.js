@@ -6,6 +6,10 @@
     constructor(canvas) {
       this.canvas = canvas;
       this.delayMs = 0;
+      this.interactionDelayMs =
+        TerrainHiGAN.isMobileDevice() || globalThis.matchMedia?.("(pointer: coarse)").matches
+          ? 4
+          : 0;
       this.meshBudgetMs = 4;
       this.interactingUntil = 0;
       this.busy = false;
@@ -19,7 +23,7 @@
         const starting = now >= this.interactingUntil;
         this.interactingUntil = now + 150;
         this.meshBudgetMs = 1.5;
-        this.delayMs = Math.max(4, this.delayMs);
+        this.delayMs = Math.max(this.interactionDelayMs, this.delayMs);
         if (starting || now - this.lastSent >= 100) this.send();
         this.schedule();
       };
@@ -54,7 +58,7 @@
         const slow = interval > this.frameIntervalMs * 1.5;
         this.delayMs = Math.max(0, Math.min(32, this.delayMs + (slow ? 4 : -1)));
       }
-      if (interacting) this.delayMs = Math.max(4, this.delayMs);
+      if (interacting) this.delayMs = Math.max(this.interactionDelayMs, this.delayMs);
       this.meshBudgetMs = interacting || this.delayMs > 0 ? 1.5 : 4;
       this.lastFrame = time;
       if (!this.busy && !interacting) {

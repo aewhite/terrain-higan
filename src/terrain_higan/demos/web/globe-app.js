@@ -425,6 +425,12 @@
       }
       if (controller.failed || data.id !== controller.active?.id) return;
       if (data.type === "tile") {
+        controller.pipelineSize =
+          !TerrainHiGAN.mobileView &&
+          data.provider.name === "webgpu" &&
+          new URLSearchParams(location.search).get("batch") !== "1"
+            ? 3
+            : 1;
         element("backend").textContent = data.provider.name === "wasm" ? "CPU / WASM" : "WebGPU";
         element("backend").title = data.provider.detail || "";
         element("threads").textContent =
@@ -434,6 +440,9 @@
           cacheBytes: data.metrics.cacheBytes,
           cacheHits: data.metrics.cacheHits,
           maxParallelRuns: data.metrics.maxParallelRuns,
+          maxBatchSize: data.metrics.maxBatchSize,
+          batchedRuns: data.metrics.batchedRuns,
+          inferenceBlocks: data.metrics.inferenceBlocks,
         });
       }
       controller.receive(data, false);
