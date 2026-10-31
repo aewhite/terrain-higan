@@ -54,7 +54,7 @@
       this.send(request);
     }
 
-    receive(data) {
+    receive(data, dispatch = true) {
       // Keys can recur after navigation; only the unique request ID owns the active slot.
       if (!this.active || data.id !== this.active.id || data.key !== this.active.key) return;
       if (data.type === "status") {
@@ -74,7 +74,7 @@
         this.backend = data.provider.label;
         this.trim();
       }
-      this.dispatch();
+      if (dispatch) this.dispatch();
     }
 
     trim() {

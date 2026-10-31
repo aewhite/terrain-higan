@@ -153,7 +153,9 @@ const vm = require("node:vm");
   renderer.show = function (tiles, patches) {
     return show.call(this, tiles, patches, Infinity);
   };
-  let renders = 0;
+  let renders = 0,
+    uploads = 0,
+    renderTarget = null;
   Object.assign(renderer, {
     canvas: { width: 320, height: 240 },
     camera: new THREE.PerspectiveCamera(42, 320 / 240, 0.001, 12),
@@ -170,7 +172,31 @@ const vm = require("node:vm");
     measurement: new THREE.Group(),
     sun: new THREE.DirectionalLight(),
     renderer: {
-      render() {
+      compile(mesh, _camera, scene) {
+        assert.equal(
+          mesh.visible,
+          false,
+          "display materials prepare while replacements stay hidden",
+        );
+        assert.equal(mesh.parent, scene);
+      },
+      getRenderTarget() {
+        return renderTarget;
+      },
+      setRenderTarget(target) {
+        renderTarget = target;
+      },
+      render(scene) {
+        if (renderTarget) {
+          uploads++;
+          assert.equal(
+            scene.children.filter((child) => child.isMesh && child.visible).length,
+            1,
+            "upload pass draws only one replacement mesh",
+          );
+          assert.equal(renderTarget.width, 1);
+          assert.equal(renderTarget.height, 1);
+        }
         renders++;
       },
     },
@@ -278,6 +304,11 @@ const vm = require("node:vm");
       vertexValues: new Float32Array(67 * 67).fill(-1).buffer,
     },
     false,
+  );
+  assert.equal(
+    controller.active,
+    null,
+    "replies wait for the latest frame's selection before dispatch",
   );
   controller.update();
   const upgraded = renderer.patchTiles.get(current.key);
@@ -409,8 +440,11 @@ const vm = require("node:vm");
   renderer.onChange = () => wakeups++;
   const slice = (patches = refined) => {
     const before = clock;
+    const uploaded = uploads;
     renderer.show([source], patches, 2);
     assert(clock - before <= 3, "each slice yields when its clock budget expires");
+    assert(uploads - uploaded <= 1, "replacement uploads are spread across frames");
+    assert.equal(renderTarget, null, "upload passes restore the display framebuffer");
   };
   let slices = 0;
   do {

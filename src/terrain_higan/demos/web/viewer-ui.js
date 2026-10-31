@@ -1,5 +1,7 @@
 "use strict";
 (() => {
+  const refinement = new TerrainHiGAN.RefinementScheduler(document.getElementById("world"));
+  TerrainHiGAN.refinement = refinement;
   const progress = document.getElementById("render-progress-value");
   const progressLabel = document.getElementById("render-progress-label");
   const progressPanel = document.getElementById("render-progress");
@@ -14,6 +16,7 @@
   const drawProgress = () => {
     const ratio = totalTiles > 0 ? Math.min(1, loadedTiles / totalTiles) : 0;
     const ready = totalTiles > 0 && ratio === 1 && !renderFailed;
+    refinement.setBusy(!ready && !renderFailed);
     progressPanel.hidden = ready && !updateAvailable;
     progressPanel.title = renderError;
     updateButton.hidden = !updateAvailable && !renderFailed;

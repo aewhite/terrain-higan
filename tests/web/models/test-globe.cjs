@@ -70,13 +70,10 @@ const { bundleManifest } = demoRequire("./sync-models.cjs");
   const stateCount = states.length;
   controller.receive({ ...current, type: "tile", values: new Float32Array(1).buffer }, false);
   assert.equal(states.length, stateCount, "streamed replies defer viewport work to the frame");
-  assert.notEqual(
-    controller.active.id,
-    current.id,
-    "inference continues while the frame is queued",
-  );
+  assert.equal(controller.active, null, "the next request waits for the latest frame selection");
   assert(controller.tiles.has(current.key));
   controller.update();
+  assert.notEqual(controller.active.id, current.id, "inference resumes on the next display frame");
   controller.fail("test failure");
   assert.equal(states[states.length - 1].error, "test failure");
   for (const side of [16, 64, 16384, globe.sideAt(20)])

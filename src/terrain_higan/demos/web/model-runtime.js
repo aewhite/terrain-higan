@@ -29,27 +29,63 @@
         this.emit({ type: "bundle-changed" });
         throw new Error("Model bundle changed");
       }
+      // Persist model files separately from the bounded in-memory ONNX sessions.
+      // Use the content hash, not the UI bundle, so code updates reuse weights.
+      const expected = manifest.models[modelName(zoom)];
+      const key = new URL(
+        `./assets/models/${modelName(zoom)}.onnx?sha256=${expected}`,
+        self.location.href,
+      ).href;
+      let cache;
+      try {
+        cache = await globalThis.caches?.open("terrain-higan-models-v1");
+        const cached = await cache?.match(key);
+        if (cached) {
+          this.emit({ type: "phase", phase: "read", message: `Read ${modelName(zoom)}` });
+          const bytes = new Uint8Array(await cached.arrayBuffer());
+          if ((await this.modelHash(bytes, zoom)) === expected) return bytes;
+          // A damaged local entry must never reach ONNX. Repair it from the server.
+          await cache.delete(key);
+        }
+      } catch (error) {
+        console.warn("Model file cache unavailable; using browser HTTP cache:", error);
+        cache = null;
+      }
       this.emit({
         type: "phase",
         phase: "download",
         message: `Download ${modelName(zoom)}`,
       });
-      const modelResponse = await fetch(this.modelUrl(zoom), { cache: "no-store" });
+      const modelResponse = await fetch(key, { cache: cache ? "no-store" : "force-cache" });
       if (!modelResponse.ok)
         throw new Error(`${modelName(zoom)} returned HTTP ${modelResponse.status}`);
       const bytes = new Uint8Array(await modelResponse.arrayBuffer());
+      if ((await this.modelHash(bytes, zoom)) !== expected) {
+        this.emit({ type: "bundle-changed" });
+        throw new Error(`${modelName(zoom)} does not match model bundle ${bundle}`);
+      }
+      if (cache) {
+        try {
+          await cache.put(
+            key,
+            new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } }),
+          );
+        } catch (error) {
+          // Storage denial/quota must not prevent rendering verified model data.
+          console.warn("Could not retain model file in browser storage:", error);
+        }
+      }
+      return bytes;
+    }
+
+    async modelHash(bytes, zoom) {
       this.emit({ type: "phase", phase: "verify", message: `Check ${modelName(zoom)}` });
       const digest = globalThis.crypto?.subtle
         ? await crypto.subtle.digest("SHA-256", bytes)
         : sha256.arrayBuffer(bytes);
-      const hash = Array.from(new Uint8Array(digest), (byte) =>
-        byte.toString(16).padStart(2, "0"),
-      ).join("");
-      if (hash !== manifest.models[modelName(zoom)]) {
-        this.emit({ type: "bundle-changed" });
-        throw new Error(`${modelName(zoom)} does not match model bundle ${bundle}`);
-      }
-      return bytes;
+      return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+        "",
+      );
     }
 
     async sessionFor(zoom) {

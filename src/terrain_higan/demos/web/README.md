@@ -110,6 +110,9 @@ vertex construction. The existing mesh set stays visible until its replacements
 can be swapped together, preserving shared edges. Only one replacement set is
 prepared at a time; camera changes cancel obsolete work and release its meshes.
 Progress remains active until both inference and mesh preparation finish.
+Hidden replacement meshes upload one at a time into a 1px render target before
+the visible swap, spreading geometry/texture uploads over animation frames.
+The existing globe remains visible and interactive throughout preparation.
 Only coarse roots and final visible model tiles are requested for display, center-first;
 intermediate model dependencies remain the generator's responsibility. Offscreen
 display requests release the queue immediately. Obsolete dependency chains stop
@@ -259,7 +262,14 @@ parent; the slope-based map serves as the base for its learned corrections.
 Zoom changes reuse cached model tiles, with one filtered draw for fractional scales.
 Small pans crop the existing native-pixel mosaic instead of rebuilding it, and
 elevation statistics wait until interaction pauses. Mobile display density is
-bounded to reduce canvas and geometry work during gestures. Incoming
+bounded to reduce canvas and geometry work during gestures. The 2D viewer keeps
+the committed mosaic interactive while a spare canvas prepares a new zoom or
+extent. Preparation uses the same adaptive frame budget as the globe and uploads
+at most one tile per animation frame. Native tile arrivals patch only their own
+rectangle; they do not rebuild the entire cached image. Tile image creation is
+deferred out of worker-message callbacks, and progress includes pending display
+work. URL updates wait for input to settle, avoiding per-frame history writes
+and Safari's history rate limit. Incoming
 tiles replace the preview at native resolution. A separate bounded display cache
 retains prior zoom levels; a new seed or colormap never displays another world's
 preview. Obsolete display requests release immediately; shared block producers
@@ -327,9 +337,17 @@ The sync writes a bundle ID for the models and demo code after atomically replac
 changed ONNX files. The viewer shows its short ID and reloads when that ID changes, clearing model
 sessions and elevation caches held by an older browser tab. The worker also
 checks each ONNX file against the active bundle before opening a session.
-Model bytes are fetched with `cache: "no-store"`; loaded sessions are reused in
-the terrain worker's memory. The worker lazily opens only the models required
-by the current zoom level while the page shell remains responsive.
+Downloaded model files are retained in browser Cache Storage, independently of
+loaded ONNX sessions. All downloaded levels remain cached; mobile session eviction
+does not evict their files. Keys use model SHA-256 hashes, allowing 2D/globe workers,
+page reloads, and UI-only bundle updates to reuse unchanged weights. Both downloaded
+and cached bytes are verified before opening a session; damaged cache entries are
+replaced. The progress label says `Read zX` for a disk-cache hit and `Download zX`
+for a cache miss. Files are downloaded as needed, without preloading unused levels
+or retaining every model in RAM. Cache Storage requires HTTPS or localhost and is
+subject to browser storage quotas/eviction; when unavailable the worker uses the
+HTTP cache with hash-versioned URLs. The manifest is still checked without caching
+to detect model updates. The page shell remains responsive during model loading.
 
 Only model output is rendered. If WebGPU initialization fails, the worker retries
 with the WASM CPU backend. If inference still fails, the actual error remains
@@ -347,6 +365,11 @@ UI thread. The inference queue serializes session loading, execution, and mobile
 session eviction. Cancellation skips obsolete queued work; an active model call
 can finish and populate reusable cache blocks. The CPU fallback yields between
 model calls so cancellation messages can be handled without another worker.
+Both viewers monitor frame timing while rendering or interacting. Slow frames
+increase the gap between model calls up to 32ms; smooth frames restore throughput.
+Gestures retain continuous inference with a small gap between calls and reduce
+globe mesh preparation to a 1.5ms cooperative budget per frame. Individual model
+calls and uploads cannot be preempted. Monitoring stops when the viewer is idle.
 For diagnosis, `?backend=wasm` forces CPU inference at every level.
 
 Start the local server from the repository root:

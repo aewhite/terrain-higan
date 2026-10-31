@@ -33,6 +33,10 @@ importScripts(
     : new TerrainHiGAN.globe.GlobeGenerator(runtime, cache);
   let generation = 0;
   self.onmessage = async ({ data }) => {
+    if (data.type === "frame-budget") {
+      runtime.setPacing(data.delayMs);
+      return;
+    }
     if (data.type === "reset") {
       generation++;
       generator.cache.clear();

@@ -1010,6 +1010,9 @@ class GlobeRenderer {
 
   clearPatches() {
     this.cancelMeshUpdate();
+    this.uploadTarget?.dispose();
+    this.uploadTarget = null;
+    this.uploadScene = null;
     for (const tile of this.patchTiles?.values() || []) this.dispose(tile);
     this.patchTiles = new Map();
     this.displayTiles = [];
@@ -1020,7 +1023,7 @@ class GlobeRenderer {
     this.renderDirty = true;
   }
 
-  show(tiles, patches, budgetMs = 4) {
+  show(tiles, patches, budgetMs = this.meshBudgetMs ?? 4) {
     this.patchTiles ||= new Map();
     if (this.meshUpdate && this.meshUpdate.view !== this.selectionKey) this.cancelMeshUpdate();
     if (!this.meshUpdate && this.displayPatches !== patches) {
@@ -1035,13 +1038,49 @@ class GlobeRenderer {
     if (this.meshUpdate) {
       const deadline = performance.now() + budgetMs;
       let result;
-      do result = this.meshUpdate.steps.next();
-      while (!result.done && performance.now() < deadline);
+      do {
+        result = this.meshUpdate.steps.next();
+        if (result.value) {
+          this.uploadTile(result.value);
+          // GPU uploads/first draws are indivisible. Never accumulate a batch
+          // of them in a frame, even if CPU preparation used little time.
+          if (Number.isFinite(budgetMs)) break;
+        }
+      } while (!result.done && performance.now() < deadline);
       if (result.done) this.meshUpdate = null;
       // Finish the latest data on another frame, without queueing every reply.
       this.onChange();
     }
     this.meshPending = !!this.meshUpdate || this.displayPatches !== patches;
+  }
+
+  uploadTile(tile) {
+    // Render one hidden replacement into a tiny target to upload its geometry
+    // and texture before the atomic visible swap.
+    if (!this.uploadTarget) {
+      this.uploadTarget = new THREE.WebGLRenderTarget(1, 1);
+      this.uploadScene = new THREE.Scene();
+      for (const child of this.scene.children)
+        if (child.isLight) this.uploadScene.add(child.clone());
+    }
+    const target = this.renderer.getRenderTarget();
+    const mesh = tile.mesh;
+    const culled = mesh.frustumCulled;
+    this.uploadScene.add(mesh);
+    mesh.visible = true;
+    mesh.frustumCulled = false;
+    try {
+      this.renderer.setRenderTarget(this.uploadTarget);
+      this.renderer.render(this.uploadScene, this.camera);
+    } finally {
+      this.renderer.setRenderTarget(target);
+      mesh.visible = false;
+      mesh.frustumCulled = culled;
+      this.scene.add(mesh);
+    }
+    // Three.js uses a different output-color shader for render targets. Prepare
+    // the display variant here too, rather than initializing a batch at swap time.
+    this.renderer.compile(mesh, this.camera, this.scene);
   }
 
   *buildMeshUpdate(tiles, patches, job) {
@@ -1090,6 +1129,7 @@ class GlobeRenderer {
         });
         job.created.push(tile);
         next.set(patch.key, tile);
+        yield tile;
       }
       yield;
     }

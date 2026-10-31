@@ -32,6 +32,10 @@ importScripts(
     let newestRequestId = 0;
     let cancelActive = null;
     return async ({ data }) => {
+      if (data.type === "frame-budget") {
+        runtime.setPacing(data.delayMs);
+        return;
+      }
       if (!Number.isSafeInteger(data.id) || data.id <= 0) {
         emit({
           type: "error",

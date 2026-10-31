@@ -186,13 +186,23 @@
     cancelAnimationFrame(pointerFrame);
     pointerFrame = 0;
     const now = performance.now();
+    renderer.meshBudgetMs = TerrainHiGAN.refinement.meshBudgetMs;
     const interacting =
       document.body.classList.contains("mobile-ui") && !walk.active && (pointerDown || pinch);
     clearTimeout(terrainUpdateTimer);
-    if (!interacting || now - lastTerrainUpdate >= 120) {
+    if (
+      !interacting ||
+      (!controller.active && controller.sequence.length) ||
+      now - lastTerrainUpdate >= 120
+    ) {
       controller.update();
       lastTerrainUpdate = now;
-    } else terrainUpdateTimer = setTimeout(queueView, 120 - (now - lastTerrainUpdate));
+    } else {
+      // Continue the bounded mesh work between more expensive view selections.
+      if (controller.selection?.key === renderer.selectionKey)
+        renderer.show(controller.display, controller.patches);
+      terrainUpdateTimer = setTimeout(queueView, 120 - (now - lastTerrainUpdate));
+    }
     minimap?.draw();
     const hudState = `${walk.status}:${walk.mouseBound}:${walk.requestedSpeed}`;
     if (walk.active && !walk.paused && now - hudUpdated < 100 && hudStatus === hudState) {
@@ -397,6 +407,7 @@
     options.delete("threads");
     options.set("bundle", TerrainHiGAN.bundle);
     worker = new Worker(`./globe-worker.js?${options}`);
+    TerrainHiGAN.refinement.setWorker(worker);
     worker.onerror = (event) => controller.fail(event.message || "Globe worker failed");
     worker.onmessage = ({ data }) => {
       if (data.type === "bundle-changed") {

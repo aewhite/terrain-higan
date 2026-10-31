@@ -216,7 +216,8 @@
       if (data.type === "tile") {
         if (!update) {
           this.sequence = this.sequence.filter((candidate) => candidate.key !== node.key);
-          this.dispatch();
+          // Let the next display frame select current work before dispatching.
+          // A tile reply must not immediately submit another outdated view.
         }
         const tile = {
           ...node,

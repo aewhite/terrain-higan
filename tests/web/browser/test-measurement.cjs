@@ -138,7 +138,7 @@ const screenshots = path.join(rootDir, "runs/demo-measurement");
       assert.equal(await deep.locator("#distance").innerText(), `${50 * deviceScaleFactor} m`);
       await deep.keyboard.press("+");
       await deep.waitForFunction(
-        () => Number(new URLSearchParams(location.hash.slice(1)).get("z")) === 20,
+        () => Number(document.getElementById("world").dataset.viewZoom) === 20,
       );
       assert.equal(await deep.locator("#distance").innerText(), `${50 * deviceScaleFactor} m`);
       await deep.keyboard.press("-");
@@ -159,7 +159,7 @@ const screenshots = path.join(rootDir, "runs/demo-measurement");
       await deep.locator("#toggle-controls").click();
       await deep.keyboard.press("+");
       await deep.waitForFunction(
-        () => Number(new URLSearchParams(location.hash.slice(1)).get("z")) === 20,
+        () => Number(document.getElementById("world").dataset.viewZoom) === 20,
       );
       await deep.touchscreen.tap(20, 620);
       await deep.touchscreen.tap(21, 620);

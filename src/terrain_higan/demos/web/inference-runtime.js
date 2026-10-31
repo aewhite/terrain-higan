@@ -8,6 +8,7 @@
       this.lowMemory = options.get("mobile") === "1";
       this.providers = new Map();
       this.pending = Promise.resolve();
+      this.delayMs = 0;
       let lastInferencePhase = -Infinity;
       this.runtime = new TerrainHiGAN.ModelRuntime(ort, options, (data) => {
         const now = performance.now();
@@ -28,6 +29,11 @@
       return { data, dims };
     }
 
+    setPacing(delayMs) {
+      this.delayMs = Math.max(0, Math.min(32, delayMs));
+      this.metrics.inferenceDelayMs = this.delayMs;
+    }
+
     run(model, inputs, assertCurrent = () => {}) {
       const result = this.pending.then(async () => {
         assertCurrent();
@@ -46,9 +52,10 @@
         );
         this.metrics.maxParallelRuns = 1;
         const output = await this.runtime.run(loaded, feeds);
-        // WASM resolves synchronously. Yield a task so cancel/navigation
-        // messages can run between CPU calls instead of waiting for a tile.
-        if (loaded.provider.name === "wasm") await new Promise((resolve) => setTimeout(resolve, 0));
+        // Leave GPU time for drawing when the page reports slow frames. WASM
+        // also needs a task boundary so navigation/cancel messages can run.
+        if (loaded.provider.name === "wasm" || this.delayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, this.delayMs));
         this.providers.set(model.name, loaded.provider);
         return { ...output, model: model.name, provider: loaded.provider };
       });

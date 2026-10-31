@@ -58,6 +58,7 @@ const { performance } = require("node:perf_hooks");
     map: "realistic",
     exaggeration: 1,
     onChange() {},
+    uploadTile() {}, // Geometry-only regression; GPU uploads are covered in LOD/browser checks.
   });
   renderer.setView(20, -25, globe.RADIUS * 2);
   const controller = new globe.GlobeTileController(

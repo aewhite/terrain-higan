@@ -18,6 +18,18 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
       page.on("pageerror", (e) => errors.push(e.message));
       // Input tests need the real DOM and camera, without running terrain inference.
       await page.addInitScript(() => {
+        globalThis.historyWrites = 0;
+        const replace = history.replaceState.bind(history);
+        let calls = [];
+        history.replaceState = (...args) => {
+          const now = performance.now();
+          calls = calls.filter((time) => now - time < 30000);
+          if (calls.length >= 100)
+            throw new DOMException("Too many history updates", "SecurityError");
+          calls.push(now);
+          historyWrites++;
+          return replace(...args);
+        };
         window.tileRequests = [];
         window.Worker = class {
           postMessage(message) {
@@ -29,8 +41,12 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
       await page.waitForFunction(() => new URLSearchParams(location.hash.slice(1)).has("z"));
       const camera = () =>
         page.evaluate(() => {
-          const p = new URLSearchParams(location.hash.slice(1));
-          return { z: Number(p.get("z")), x: Number(p.get("x")), y: Number(p.get("y")) };
+          const camera = document.getElementById("world").dataset;
+          return {
+            z: Number(camera.viewZoom),
+            x: Math.round(Number(camera.viewX)),
+            y: Math.round(Number(camera.viewY)),
+          };
         });
       const initial = await camera();
       const area = 375 * 812 * deviceScaleFactor ** 2 * (524288 / 2 ** initial.z) ** 2;
@@ -107,6 +123,9 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
       await page.waitForFunction(() => world.width > 0 && world.style.width);
       assert.equal((await camera()).z, initial.z, "URL restores zoom");
       await page.keyboard.press("Home");
+      await page.waitForFunction(
+        () => Number(world.dataset.viewX) === 0 && Number(world.dataset.viewY) === 0,
+      );
       assert.deepEqual(await camera(), initial, "Home restores Earth-scale view at the origin");
       await page.goto(baseUrl + "#seed=4829347&z=0");
       await page.reload();
@@ -120,10 +139,47 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
         Math.abs((await camera()).z - 0.02) < 1e-9,
         "small wheel motion produces a small zoom change",
       );
+      if (deviceScaleFactor === 2) {
+        const writes = await page.evaluate(() => historyWrites);
+        const beforePan = await camera();
+        await touch("touchStart", [[1, 140, 450]]);
+        for (let step = 0; step < 120; step++)
+          await touch("touchMove", [[1, 140 + (step % 30), 450 + Math.floor(step / 30)]]);
+        const moving = await camera();
+        assert(
+          moving.x !== beforePan.x || moving.y !== beforePan.y,
+          "sustained input keeps moving the camera",
+        );
+        assert(
+          (await page.evaluate(() => historyWrites)) - writes < 10,
+          "continuous gestures do not write browser history per frame",
+        );
+        await touch("touchEnd", []);
+        await page.waitForFunction(() => {
+          const saved = new URLSearchParams(location.hash.slice(1));
+          return (
+            Number(saved.get("x")) === Math.round(Number(world.dataset.viewX)) &&
+            Number(saved.get("y")) === Math.round(Number(world.dataset.viewY))
+          );
+        });
+      }
       await page.reload();
       await page.waitForFunction(() => world.style.width);
       assert(Math.abs((await camera()).z - 0.02) < 1e-9, "URL restores fractional zoom");
-      await page.evaluate(() => TerrainHiGAN.setRenderProgress(1, 4));
+      await page.waitForFunction(() => world.dataset.mosaicPending === "false");
+      // The input fixture leaves inference pending. Wait for display callbacks
+      // to settle before overriding progress to check the control's formatting.
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                TerrainHiGAN.setRenderProgress(1, 4);
+                resolve();
+              }),
+            ),
+          ),
+      );
       assert.equal(await page.locator("#render-progress-value").evaluate((p) => p.value), 0.25);
       assert.match(await page.locator("#render-progress-label").innerText(), /25%/);
       const progressBounds = await page.locator("#render-progress").boundingBox();
