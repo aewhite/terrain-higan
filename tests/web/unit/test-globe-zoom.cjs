@@ -58,6 +58,7 @@ const { performance } = require("node:perf_hooks");
     map: "realistic",
     exaggeration: 1,
     onChange() {},
+    uploadTile() {}, // Geometry-only regression; GPU uploads are covered in LOD/browser checks.
   });
   renderer.setView(20, -25, globe.RADIUS * 2);
   const controller = new globe.GlobeTileController(
@@ -78,6 +79,7 @@ const { performance } = require("node:perf_hooks");
   context.zoomRenderer = renderer;
   context.zoomController = controller;
   const timings = [];
+  let maxSliceMs = 0;
   for (let iteration = 0; iteration < 3; iteration++) {
     const started = performance.now();
     vm.runInContext(
@@ -85,6 +87,11 @@ const { performance } = require("node:perf_hooks");
       context,
       { timeout: 5000 },
     );
+    while (renderer.meshPending) {
+      const slice = performance.now();
+      vm.runInContext("zoomController.update()", context, { timeout: 5000 });
+      maxSliceMs = Math.max(maxSliceMs, performance.now() - slice);
+    }
     timings.push(Math.round(performance.now() - started));
     assert(renderer.patchTiles.size > 0);
     for (const patch of renderer.patchTiles.values()) {
@@ -93,7 +100,8 @@ const { performance } = require("node:perf_hooks");
     }
   }
   console.log("Fractional cube-edge wrapping and rapid Retina zoom regression passed", {
-    frameMs: timings,
+    settleMs: timings,
+    maxSliceMs: Math.round(maxSliceMs),
   });
 })().catch((error) => {
   console.error(error);

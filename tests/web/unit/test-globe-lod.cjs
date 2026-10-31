@@ -17,6 +17,103 @@ const vm = require("node:vm");
     context,
   );
   const globe = api.globe;
+  const previewStates = [],
+    previewRequests = [];
+  const previewRenderer = {
+    camera: { position: {} },
+    selectionKey: "overview",
+    bounds: (tile) => ({ ...tile, center: { distanceTo: () => 0 } }),
+    visible: (bounds) => bounds.face < 2,
+    span: (bounds) => 256 / 2 ** bounds.depth,
+    prepareView() {},
+    show() {},
+    dispose() {},
+  };
+  const previewController = new globe.GlobeTileController(
+    previewRenderer,
+    (request) => previewRequests.push(request),
+    (status) => previewStates.push(status),
+  );
+  const reply = () =>
+    previewController.receive({
+      ...previewController.active,
+      type: "tile",
+      level: previewController.active.depth + 2,
+      values: new Float32Array(68 * 68).buffer,
+      vertexValues: new Float32Array(67 * 67).buffer,
+    });
+  previewController.reset("1");
+  const firstRoot = previewController.active;
+  previewRenderer.visible = (bounds) => bounds.face >= 4;
+  previewRenderer.selectionKey = "turning";
+  previewController.update();
+  assert.equal(
+    previewController.active.id,
+    firstRoot.id,
+    "spinning cannot cancel an in-flight coarse face needed for the whole sphere",
+  );
+  previewRenderer.visible = (bounds) => bounds.face < 2;
+  previewRenderer.selectionKey = "overview";
+  previewController.update();
+  assert.equal(previewStates.at(-1).previewReady, false);
+  reply();
+  assert.equal(previewStates.at(-1).previewReady, false, "one face leaves a partial preview");
+  assert.equal(previewController.active.depth, 0, "visible roots precede fine inference");
+  reply();
+  assert.equal(previewStates.at(-1).previewReady, false, "hidden faces also need coarse coverage");
+  while (previewController.active.depth === 0) reply();
+  assert.equal(previewStates.at(-1).previewReady, true, "coarse roots cover the visible globe");
+  assert.equal(previewStates.at(-1).ready, false, "preview completion does not imply full detail");
+  assert(previewController.active.depth > 0, "refinement starts automatically");
+  assert(previewController.patches.every((patch) => patch.source.depth === 0));
+  const rootRequests = previewRequests.filter((request) => request.depth === 0).length;
+  while (previewController.active) {
+    reply();
+    assert.equal(previewStates.at(-1).previewReady, true, "refinement retains full coverage");
+  }
+  assert.equal(previewStates.at(-1).ready, true);
+  previewRenderer.meshPending = true;
+  previewController.update();
+  assert.equal(previewStates.at(-1).ready, false, "inference completion still waits for meshes");
+  assert.equal(previewStates.at(-1).pending, 1);
+  previewRenderer.patchTiles = new Map();
+  previewController.update();
+  assert.equal(
+    previewStates.at(-1).previewReady,
+    false,
+    "data alone cannot reveal an unbuilt preview",
+  );
+  for (const node of previewController.selection.leaves)
+    previewRenderer.patchTiles.set(node.key, {});
+  previewController.update();
+  assert.equal(
+    previewStates.at(-1).previewReady,
+    true,
+    "committed coverage remains a preview while newer meshes build",
+  );
+  previewRenderer.meshPending = false;
+  previewController.update();
+  assert.equal(previewStates.at(-1).ready, true);
+  assert(
+    previewController.patches
+      .filter((patch) => previewRenderer.visible(patch.bounds))
+      .every((patch) => patch.source.depth === patch.depth),
+  );
+  assert.equal(
+    previewRequests.filter((request) => request.depth === 0).length,
+    rootRequests,
+    "refinement reuses the preview roots",
+  );
+  previewRenderer.visible = (bounds) => bounds.face >= 4;
+  previewRenderer.selectionKey = "backside";
+  previewController.update();
+  assert(
+    previewController.sequence.every((node) => node.depth > 0),
+    "turning to the hidden hemisphere reuses its cached roots immediately",
+  );
+  assert(previewController.patches.every((patch) => previewController.tiles.has(patch.source.key)));
+  previewController.reset("2");
+  assert.equal(previewStates.at(-1).previewReady, false, "a new seed resets preview coverage");
   for (const [samplePixels, expectedDepth] of [
     [1.01, 0],
     [1.4, 0],
@@ -39,7 +136,9 @@ const vm = require("node:vm");
       () => {},
     );
     selectionController.reset("1");
-    const leaves = selectionController.selection.leaves;
+    const leaves = selectionController.selection.leaves.filter((node) =>
+      selectionRenderer.visible(node.bounds),
+    );
     assert.equal(leaves.length, 4 ** expectedDepth);
     assert(
       leaves.every((node) => node.depth === expectedDepth),
@@ -48,7 +147,15 @@ const vm = require("node:vm");
     assert(leaves.every((node) => selectionRenderer.span(node.bounds) / 64 <= 1.5));
   }
   const renderer = Object.create(globe.GlobeRenderer.prototype);
-  let renders = 0;
+  // These geometry assertions inspect completed scenes; the budgeted path is
+  // exercised separately below with a deterministic clock.
+  const show = renderer.show;
+  renderer.show = function (tiles, patches) {
+    return show.call(this, tiles, patches, Infinity);
+  };
+  let renders = 0,
+    uploads = 0,
+    renderTarget = null;
   Object.assign(renderer, {
     canvas: { width: 320, height: 240 },
     camera: new THREE.PerspectiveCamera(42, 320 / 240, 0.001, 12),
@@ -65,7 +172,31 @@ const vm = require("node:vm");
     measurement: new THREE.Group(),
     sun: new THREE.DirectionalLight(),
     renderer: {
-      render() {
+      compile(mesh, _camera, scene) {
+        assert.equal(
+          mesh.visible,
+          false,
+          "display materials prepare while replacements stay hidden",
+        );
+        assert.equal(mesh.parent, scene);
+      },
+      getRenderTarget() {
+        return renderTarget;
+      },
+      setRenderTarget(target) {
+        renderTarget = target;
+      },
+      render(scene) {
+        if (renderTarget) {
+          uploads++;
+          assert.equal(
+            scene.children.filter((child) => child.isMesh && child.visible).length,
+            1,
+            "upload pass draws only one replacement mesh",
+          );
+          assert.equal(renderTarget.width, 1);
+          assert.equal(renderTarget.height, 1);
+        }
         renders++;
       },
     },
@@ -90,6 +221,32 @@ const vm = require("node:vm");
   controller.tilesVersion++;
   controller.active = null;
   controller.update();
+  const complete = renderer.patchTiles;
+  for (let face = 0; face < globe.FACE_COUNT; face++)
+    assert.equal(
+      [...complete.values()]
+        .filter((patch) => patch.face === face)
+        .reduce((area, patch) => area + 4 ** -patch.depth, 0),
+      1,
+      "committed meshes cover an entire face",
+    );
+  for (const [latitude, longitude] of [
+    [23, 13],
+    [23, 103],
+    [23, -167],
+    [23, -77],
+    [82, 27],
+    [-82, 27],
+  ]) {
+    renderer.setView(latitude, longitude, globe.RADIUS * 2);
+    assert(
+      renderer.surfacePick(160, 120),
+      `spinning reveals cached terrain at ${latitude}, ${longitude} before any mesh update`,
+    );
+    assert.equal(renderer.patchTiles, complete);
+  }
+  renderer.setView(20, -25, globe.RADIUS * 2);
+  controller.update();
   const overviewDepth = Math.max(...controller.patches.map((patch) => patch.depth));
   renderer.zoom(1e-12);
   controller.update();
@@ -113,7 +270,11 @@ const vm = require("node:vm");
       (node) => node.depth === 0 || !controller.selection.expanded.has(node.key),
     ),
   );
-  assert(renderer.patchTiles.size < 250, "geometry remains camera-local");
+  assert(
+    [...renderer.patchTiles.values()].filter((patch) => renderer.visible(patch.bounds)).length <
+      250,
+    "fine geometry remains camera-local while coarse geometry closes the sphere",
+  );
   for (let row = 0; row < 7; row++)
     for (let column = 0; column < 9; column++) {
       const horizontal = ((column + 0.5) * 320) / 9,
@@ -144,6 +305,11 @@ const vm = require("node:vm");
     },
     false,
   );
+  assert.equal(
+    controller.active,
+    null,
+    "replies wait for the latest frame's selection before dispatch",
+  );
   controller.update();
   const upgraded = renderer.patchTiles.get(current.key);
   assert.equal(upgraded.source.depth, 18);
@@ -158,8 +324,12 @@ const vm = require("node:vm");
   let disposed = 0;
   for (const texture of oldTextures) texture.addEventListener("dispose", () => disposed++);
   renderer.restyle(controller.tiles.values(), "elevation", 1);
-  assert.equal(disposed, oldTextures.size, "shared textures are released exactly once");
   controller.update();
+  assert.equal(
+    disposed,
+    oldTextures.size,
+    "shared textures are released exactly once after the swap",
+  );
   assert(
     [...renderer.patchTiles.values()].every((patch) => !oldTextures.has(patch.mesh.material.map)),
   );
@@ -235,8 +405,102 @@ const vm = require("node:vm");
   }
   assert(segmentCounts[0] > segmentCounts[1], "measurement geometry adapts to zoom");
   renderer.measure(null, null, false);
+  renderer.clearPatches();
+  renderer.show = show;
+  renderer.setView(0, 0, globe.RADIUS * 2);
+  const source = {
+    key: "0:0:0:0",
+    face: 0,
+    depth: 0,
+    tileX: 0,
+    tileY: 0,
+    level: 2,
+    values: new Float32Array(68 * 68),
+    vertexValues: new Float32Array(67 * 67),
+  };
+  const basePatches = [{ ...source, source }];
+  renderer.show([source], basePatches, Infinity);
+  const original = renderer.patchTiles.get(source.key);
+  let originalDisposed = 0;
+  original.mesh.geometry.addEventListener("dispose", () => originalDisposed++);
+  const refined = [];
+  for (let north = 0; north < 2; north++)
+    for (let east = 0; east < 2; east++)
+      refined.push({
+        key: `0:1:${east}:${north}`,
+        face: 0,
+        depth: 1,
+        tileX: east,
+        tileY: north,
+        source,
+      });
+  let clock = 0,
+    wakeups = 0;
+  context.performance = { now: () => ++clock };
+  renderer.onChange = () => wakeups++;
+  const slice = (patches = refined) => {
+    const before = clock;
+    const uploaded = uploads;
+    renderer.show([source], patches, 2);
+    assert(clock - before <= 3, "each slice yields when its clock budget expires");
+    assert(uploads - uploaded <= 1, "replacement uploads are spread across frames");
+    assert.equal(renderTarget, null, "upload passes restore the display framebuffer");
+  };
+  let slices = 0;
+  do {
+    slice();
+    assert(++slices < 10000, "mesh preparation makes progress across frames");
+    if (renderer.meshPending) {
+      assert.equal(renderer.patchTiles.get(source.key), original, "old coverage stays installed");
+      assert.equal(original.mesh.visible, true);
+      assert.equal(originalDisposed, 0, "no old mesh is disposed before the complete swap");
+      assert(renderer.meshUpdate.created.every((tile) => !tile.mesh.visible));
+    }
+  } while (renderer.meshPending);
+  assert(slices > 1);
+  assert.equal(renderer.patchTiles.size, refined.length);
+  assert.equal(originalDisposed, 1);
+  assert([...renderer.patchTiles.values()].every((tile) => tile.mesh.visible));
+  const settledWakeups = wakeups;
+  slice();
+  assert.equal(wakeups, settledWakeups, "finished scenes stop scheduling frames");
+
+  // A camera move abandons prepared resources, keeping the committed scene.
+  const replacement = {
+    ...source,
+    values: source.values.slice(),
+    vertexValues: source.vertexValues.slice(),
+  };
+  const replacements = refined.map((patch) => ({ ...patch, source: replacement }));
+  do {
+    renderer.show([replacement], replacements, 2);
+  } while (!renderer.meshUpdate.created.length);
+  const abandoned = [...renderer.meshUpdate.created];
+  let abandonedDisposed = 0;
+  for (const tile of abandoned)
+    tile.mesh.geometry.addEventListener("dispose", () => abandonedDisposed++);
+  assert(renderer.usesTile(replacement), "in-progress sources cannot be evicted");
+  const installed = renderer.patchTiles;
+  renderer.setView(0, 25, globe.RADIUS * 2);
+  slice();
+  assert.equal(abandonedDisposed, abandoned.length, "obsolete prepared meshes are disposed");
+  assert.equal(renderer.patchTiles, installed, "cancellation preserves the installed scene");
+  assert(!renderer.usesTile(replacement), "cancelled jobs release their source pins");
+  while (renderer.meshPending) slice();
+
+  // Seed/reset cleanup must also cancel work that has already created meshes.
+  do {
+    renderer.show([replacement], replacements, 2);
+  } while (!renderer.meshUpdate.created.length);
+  renderer.clearPatches();
+  assert.equal(renderer.meshPending, false);
+  assert.equal(renderer.tiles.size, 0);
+  assert.equal(renderer.patchTiles.size, 0);
+  assert(!renderer.usesTile(replacement));
+  renderer.dispose(source);
+  renderer.dispose(replacement);
   console.log(
-    "Camera-local spherical refinement without fine inference, direct leaf scheduling, mesh reuse, idle rendering and shared-texture lifetime passed",
+    "Camera-local refinement, budgeted stitching/meshes, atomic swaps, cancellation/cleanup, mesh reuse, idle rendering and texture lifetime passed",
   );
 })().catch((error) => {
   console.error(error);

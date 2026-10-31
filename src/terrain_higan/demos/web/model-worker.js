@@ -5,14 +5,14 @@ const bundle = runtimeOptions.get("bundle");
 const versioned = (file) => (bundle ? `${file}?bundle=${bundle}` : file);
 if (!globalThis.crypto?.subtle) importScripts(versioned("./assets/runtime/sha256.js"));
 importScripts(
-  ...["terrain-common.js", "noise.js", "inference-pool.js", "terrain.js", "rendering.js"].map(
+  ...["terrain-common.js", "noise.js", "inference-runtime.js", "terrain.js", "rendering.js"].map(
     (file) => versioned("./" + file),
   ),
 );
 
 (() => {
   const {
-    InferencePool,
+    createInferenceRuntime,
     TerrainGenerator,
     validateRegion,
     padRegion,
@@ -31,7 +31,11 @@ importScripts(
   function createWorkerHandler(runtime, generator, emit) {
     let newestRequestId = 0;
     let cancelActive = null;
-    return async ({ data }) => {
+    const receive = async ({ data }) => {
+      if (data.type === "frame-budget") {
+        runtime.setPacing(data.delayMs);
+        return;
+      }
       if (!Number.isSafeInteger(data.id) || data.id <= 0) {
         emit({
           type: "error",
@@ -49,6 +53,10 @@ importScripts(
         return;
       }
       newestRequestId = Math.max(newestRequestId, data.id);
+      if (data.id !== newestRequestId) {
+        emit({ type: "cancelled", id: data.id, key: data.key });
+        return;
+      }
       const cancelled = new Promise((resolve) => {
         cancelActive = () => resolve(null);
       });
@@ -119,10 +127,21 @@ importScripts(
           reply({ type: "error", message: error instanceof Error ? error.message : String(error) });
       }
     };
+    return async (event) => {
+      await receive(event);
+      // Bounded desktop lookahead: finish up to two more tiles without a
+      // round trip through requestAnimationFrame. Replies keep ordered ownership.
+      for (const next of (event.data.ahead || []).slice(0, 2))
+        await receive({ data: { ...event.data, ...next, id: event.data.id, ahead: undefined } });
+    };
   }
 
   TerrainHiGAN.createWorkerHandler = createWorkerHandler;
   const emit = (message, transfers) => postMessage(message, transfers);
-  const runtime = new InferencePool(runtimeOptions, emit);
-  self.onmessage = createWorkerHandler(runtime, new TerrainGenerator(runtime), emit);
+  const runtime = createInferenceRuntime(runtimeOptions, emit);
+  const mobile = runtimeOptions.get("mobile") === "1";
+  const cache = mobile
+    ? new TerrainHiGAN.RegionCache(16 * 1024 * 1024, 1024)
+    : new TerrainHiGAN.RegionCache();
+  self.onmessage = createWorkerHandler(runtime, new TerrainGenerator(runtime, cache), emit);
 })();

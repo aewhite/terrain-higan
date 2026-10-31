@@ -32,6 +32,7 @@ const baseUrl = process.env.DEMO_URL || "http://127.0.0.1:4173/src/terrain_higan
             this.generation++;
           }
           postMessage(request) {
+            if (request.type === "frame-budget") return;
             if (request.type === "reset" || request.type === "cancel") {
               this.generation++;
               return;

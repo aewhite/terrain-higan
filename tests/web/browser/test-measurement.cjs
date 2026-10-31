@@ -24,7 +24,7 @@ const screenshots = path.join(rootDir, "runs/demo-measurement");
       });
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(baseUrl + "?backend=wasm#seed=4829347");
+      await page.goto(baseUrl + "?backend=wasm#seed=4829347&z=0");
       await page.waitForFunction(
         () => Number(document.querySelector("#world").dataset.modelRuns) > 0,
         {},
@@ -137,6 +137,9 @@ const screenshots = path.join(rootDir, "runs/demo-measurement");
       await deep.touchscreen.tap(80, 700);
       assert.equal(await deep.locator("#distance").innerText(), `${50 * deviceScaleFactor} m`);
       await deep.keyboard.press("+");
+      await deep.waitForFunction(
+        () => Number(document.getElementById("world").dataset.viewZoom) === 20,
+      );
       assert.equal(await deep.locator("#distance").innerText(), `${50 * deviceScaleFactor} m`);
       await deep.keyboard.press("-");
       assert.equal(await deep.locator("#distance").innerText(), `${50 * deviceScaleFactor} m`);
@@ -151,8 +154,13 @@ const screenshots = path.join(rootDir, "runs/demo-measurement");
         !(await deep.locator("#world").evaluate((canvas) => canvas.classList.contains("dragging"))),
       );
       await deep.mouse.up();
+      await deep.locator("#toggle-controls").click();
       await deep.locator("#clear-measurement").click();
+      await deep.locator("#toggle-controls").click();
       await deep.keyboard.press("+");
+      await deep.waitForFunction(
+        () => Number(document.getElementById("world").dataset.viewZoom) === 20,
+      );
       await deep.touchscreen.tap(20, 620);
       await deep.touchscreen.tap(21, 620);
       assert.equal(await deep.locator("#distance").innerText(), `${0.5 * deviceScaleFactor} m`);

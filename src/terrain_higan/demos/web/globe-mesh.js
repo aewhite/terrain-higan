@@ -34,14 +34,14 @@
     return result;
   }
 
-  function stitchPatches(patches, previous = {}, vertex, topology = {}) {
+  function* stitchPatchSteps(patches, previous = {}, vertex, topology = {}) {
     const pixel = topology.canonicalPixel || canonicalPixel;
     const corner = topology.cornerKey || cornerKey;
     const lookup = new Map(),
       prefixes = new Set(),
       records = [],
       parents = [];
-    patches.forEach((patch, index) => {
+    for (const [index, patch] of patches.entries()) {
       lookup.set(patch.key, index);
       for (let depth = 0; depth < patch.depth; depth++) {
         const scale = 2 ** (patch.depth - depth);
@@ -53,7 +53,8 @@
         parents.push(records.length);
         records.push({ patch, edge });
       }
-    });
+      yield;
+    }
     const root = (index) => {
       while (parents[index] !== index) {
         parents[index] = parents[parents[index]];
@@ -84,7 +85,10 @@
         covered = true;
         break;
       }
-      if (covered) continue;
+      if (covered) {
+        yield;
+        continue;
+      }
       const visit = (depth, east, north) => {
         const key = `${neighbor.face}:${depth}:${east}:${north}`;
         const found = lookup.get(key);
@@ -101,10 +105,11 @@
           );
       };
       visit(patch.depth, neighbor.east, neighbor.north);
+      yield;
     }
     const groups = new Map(),
       corners = new Map();
-    records.forEach((record, index) => {
+    for (const [index, record] of records.entries()) {
       const group = root(index);
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(record);
@@ -116,7 +121,8 @@
         if (existing && !before(source, existing.source)) continue;
         corners.set(key, { source, east, north });
       }
-    });
+      yield;
+    }
     for (const members of groups.values()) {
       const source = members.reduce((best, member) =>
         before(member.patch.source, best.patch.source) ? member : best,
@@ -133,6 +139,7 @@
           }
           corners.set(key, { source, east, north });
         }
+      yield;
     }
     for (const [key, corner] of corners) {
       const { source, east, north } = corner;
@@ -145,6 +152,7 @@
               (east * 2 ** source.depth - source.tileX) * 64,
               (north * 2 ** source.depth - source.tileY) * 64,
             );
+      yield;
     }
     const cornerCache = new Map(corners),
       edgeCache = new Map();
@@ -190,6 +198,7 @@
           })
         )
           parameters.push(parameter);
+        yield;
       }
       const anchorCorners = parameters.map((parameter) => {
         const [east, north] = edgePoint(owner.patch, owner.edge, parameter);
@@ -212,10 +221,11 @@
       let entry = cached;
       if (!same) {
         const vertices = new Float64Array(parameters.length * 6);
-        parameters.forEach((parameter, index) => {
+        for (const [index, parameter] of parameters.entries()) {
           if (anchorCorners[index]) {
             vertices.set(anchorCorners[index], index * 6);
-            return;
+            yield;
+            continue;
           }
           let [east, north] = edgePoint(owner.patch, owner.edge, parameter);
           if (owner.patch.face !== field.face) {
@@ -231,7 +241,8 @@
             ),
             index * 6,
           );
-        });
+          yield;
+        }
         entry = {
           source: field,
           anchorCorners,
@@ -251,11 +262,19 @@
           });
         }
       }
+      yield;
     }
     return {
       patches: patches.map((patch) => ({ ...patch, edgeBindings: bindings.get(patch.key) })),
       cache: { edges: edgeCache, corners: cornerCache },
     };
   }
-  Object.assign(TerrainHiGAN.globe, { stitchPatches, edgeValue });
+  function stitchPatches(...args) {
+    const steps = stitchPatchSteps(...args);
+    let result;
+    do result = steps.next();
+    while (!result.done);
+    return result.value;
+  }
+  Object.assign(TerrainHiGAN.globe, { stitchPatches, stitchPatchSteps, edgeValue });
 })();

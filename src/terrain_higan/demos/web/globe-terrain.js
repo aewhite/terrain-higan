@@ -128,12 +128,26 @@
       const addresses = points.map((point) => {
         const region = this.address(level, point.face, point.east, point.north, raw);
         const key = this.key(seed, region, raw);
-        if (!regions.has(key)) regions.set(key, this.block(seed, region, raw, assertCurrent));
+        if (!regions.has(key)) regions.set(key, region);
         return { point, key };
       });
-      const blocks = new Map(
-        await Promise.all([...regions].map(async ([key, work]) => [key, await work])),
-      );
+      const blocks = new Map();
+      const entries = [...regions];
+      // Limit dependency production too: one inference worker alone does not
+      // bound the tensors retained by an eagerly prepared dependency tree.
+      const batchSize = this.runtime.size || 1;
+      for (let index = 0; index < entries.length; index += batchSize) {
+        assertCurrent();
+        const batch = await Promise.all(
+          entries
+            .slice(index, index + batchSize)
+            .map(async ([key, region]) => [
+              key,
+              await this.block(seed, region, raw, assertCurrent),
+            ]),
+        );
+        for (const [key, block] of batch) blocks.set(key, block);
+      }
       return addresses.map(({ point, key }) => {
         const block = blocks.get(key);
         return block.values[(point.north - block.y) * block.width + point.east - block.x];

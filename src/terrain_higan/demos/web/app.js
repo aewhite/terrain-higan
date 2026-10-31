@@ -3,6 +3,7 @@
   const canvas = document.querySelector("#world");
   let walkView = null;
   const context = canvas.getContext("2d", { alpha: false });
+  const mapRenderer = new TerrainHiGAN.MapRenderer(canvas);
   const ui = Object.fromEntries(
     [
       "backend",
@@ -27,9 +28,21 @@
       "clear-measurement",
     ].map((id) => [id, document.getElementById(id)]),
   );
+  // Match the viewport area to Earth's surface using the nearest model level.
+  const initialZoom = () => {
+    const area = innerWidth * innerHeight * TerrainHiGAN.displayPixelRatio() ** 2;
+    const earthArea = 4 * Math.PI * 6371000 ** 2;
+    return Math.max(
+      0,
+      Math.min(
+        20,
+        Math.round(Math.log2(TerrainHiGAN.metersPerPixel(0) * Math.sqrt(area / earthArea))),
+      ),
+    );
+  };
   const state = {
     seed: TerrainHiGAN.parseSeed(),
-    zoom: 0,
+    zoom: initialZoom(),
     x: 0,
     y: 0,
     colormap: "realistic",
@@ -42,7 +55,11 @@
     TerrainHiGAN;
   const formatDistance = (meters) =>
     meters >= 1000 ? `${Math.round(meters / 1000)} km` : `${Math.max(1, Math.round(meters))} m`;
-  const updateUrl = () => {
+  let urlTimer = 0;
+  const saveUrl = () => {
+    clearTimeout(urlTimer);
+    urlTimer = 0;
+    if (walkView) return;
     const hash = new URLSearchParams({
       seed: state.seed.toString(),
       z: String(state.zoom),
@@ -50,7 +67,13 @@
       y: String(Math.round(state.y)),
       map: state.colormap,
     });
-    history.replaceState(null, "", `#${hash}`);
+    if (location.hash !== `#${hash}`) history.replaceState(null, "", `#${hash}`);
+  };
+  const updateUrl = () => {
+    clearTimeout(urlTimer);
+    // Like the globe, save the camera after input settles. Per-frame history
+    // writes can hit mobile Safari's rate limit and interrupt rendering.
+    urlTimer = setTimeout(saveUrl, 200);
   };
   const loadUrl = () => {
     const saved = new URLSearchParams(location.hash.slice(1));
@@ -58,7 +81,7 @@
       if (saved.has("seed")) state.seed = TerrainHiGAN.parseSeed(saved.get("seed"));
     } catch (_) {}
     const savedZoom = Number(saved.get("z"));
-    if (Number.isInteger(savedZoom)) state.zoom = clamp(savedZoom, 0, 20);
+    if (saved.has("z") && Number.isFinite(savedZoom)) state.zoom = clamp(savedZoom, 0, 20);
     state.x = Number(saved.get("x")) || 0;
     state.y = Number(saved.get("y")) || 0;
     if (!Number.isFinite(state.x)) state.x = 0;
@@ -69,9 +92,27 @@
   let modelWorker = null,
     modelBundle = TerrainHiGAN.bundle,
     bundleCheckPending = false;
-  let pixelRatio = devicePixelRatio || 1;
+  let pixelRatio = TerrainHiGAN.displayPixelRatio();
   // Display tiles group cached model samples at one sample per physical canvas pixel.
-  const tileSize = 256;
+  const tileSize = TerrainHiGAN.mobileView ? 128 : 256;
+  const modelZoom = () => Math.ceil(state.zoom);
+  const displayScale = () => 2 ** (state.zoom - modelZoom());
+  const updateProgress = () => {
+    const loaded = controller.sequence.filter((tile) => controller.tiles.has(tile.key)).length;
+    const preparing = viewport && !mapRenderer.ready(mapView(), tileRevision);
+    TerrainHiGAN.setRenderProgress(
+      loaded,
+      controller.sequence.length + Number(!!preparing),
+      !!controller.error,
+    );
+    if (preparing && loaded === controller.sequence.length)
+      TerrainHiGAN.setRenderPhase("Draw tiles");
+    if (!controller.error) {
+      const ready =
+        controller.sequence.length > 0 && loaded === controller.sequence.length && !preparing;
+      showRenderState(ready ? "ready" : "rendering", ready ? "Ready" : "Rendering");
+    }
+  };
   const showRenderState = (phase, message) => {
     ui.status.textContent = message;
     ui["render-indicator"].dataset.state = phase;
@@ -79,47 +120,39 @@
     ui["render-indicator"].setAttribute("aria-label", `Terrain: ${message}`);
   };
   const controller = new TileController({
+    maxCacheTiles: TerrainHiGAN.mobileView ? 128 : 512,
     send: (request) => modelWorker.postMessage(request),
     onTile: receiveTile,
-    onStatus: (_message, ready) => {
+    onStatus: () => {
       if (walkView) return;
-      showRenderState(ready ? "ready" : "rendering", ready ? "Ready" : "Rendering");
       const loaded = controller.sequence.filter((tile) => controller.tiles.has(tile.key)).length;
+      updateProgress();
       ui["visible-tiles"].textContent = `${loaded} / ${controller.sequence.length}`;
-      if (ready) {
-        drawTiles();
-        updateCursorElevation();
-        queueViewStats();
-      }
     },
     onError: (message) => {
+      TerrainHiGAN.setRenderError(message);
       showRenderState("failed", `Model failed: ${message}`);
       console.error("Terrain model failed:", message);
     },
   });
   const visibleTiles = controller.tiles;
-  let tileSequence = [],
+  let selectionKey = "",
+    tileSequence = [],
     viewport = null;
   const tileKey = (tileX, tileY) =>
-    `${state.seed}:${state.zoom}:${state.colormap}:${tileX}:${tileY}`;
-  const makeImage = (data) => {
-    const image = new ImageData(new Uint8ClampedArray(data.pixels), data.width, data.height);
-    const surface = document.createElement("canvas");
-    surface.width = image.width;
-    surface.height = image.height;
-    surface.getContext("2d").putImageData(image, 0, 0);
-    return surface;
-  };
+    `${state.seed}:${modelZoom()}:${state.colormap}:${tileX}:${tileY}`;
   const formatElevation = (value) => `${Math.round(value).toLocaleString()} m`;
   let statsTimer = 0,
-    cursor = null;
+    tileRevision = 0,
+    cursor = null,
+    mapFrame = 0;
   const updateCursorElevation = () => {
     if (!cursor || !viewport) {
       ui.elevation.textContent = "--";
       return;
     }
-    const x = viewport.left + Math.floor(cursor.x * pixelRatio),
-      y = viewport.top + Math.floor(cursor.y * pixelRatio);
+    const x = Math.floor(viewport.left + (cursor.x * pixelRatio) / displayScale()),
+      y = Math.floor(viewport.top + (cursor.y * pixelRatio) / displayScale());
     const tile = visibleTiles.get(tileKey(Math.floor(x / tileSize), Math.floor(y / tileSize)));
     ui.elevation.textContent = tile
       ? formatElevation(elevationMeters(tile.elevations[(y - tile.y) * tileSize + x - tile.x]))
@@ -136,10 +169,14 @@
       const tile = visibleTiles.get(requested.key);
       if (!tile) continue;
       loaded++;
-      const left = Math.max(tile.x, viewport.left) - tile.x,
-        top = Math.max(tile.y, viewport.top) - tile.y;
-      const right = Math.min(tile.x + tileSize, viewport.left + canvas.width) - tile.x,
-        bottom = Math.min(tile.y + tileSize, viewport.top + canvas.height) - tile.y;
+      const left = Math.max(tile.x, Math.ceil(viewport.left)) - tile.x,
+        top = Math.max(tile.y, Math.ceil(viewport.top)) - tile.y;
+      const right =
+          Math.min(tile.x + tileSize, Math.ceil(viewport.left + canvas.width / displayScale())) -
+          tile.x,
+        bottom =
+          Math.min(tile.y + tileSize, Math.ceil(viewport.top + canvas.height / displayScale())) -
+          tile.y;
       const stats =
         left === 0 && top === 0 && right === tileSize && bottom === tileSize
           ? tile.stats
@@ -164,24 +201,23 @@
     ui["view-mean"].textContent = formatElevation(mean) + suffix;
     ui["view-stddev"].textContent = formatElevation(Math.sqrt(variance)) + suffix;
   };
-  const resetViewStats = () => {
-    [ui["view-min"], ui["view-max"], ui["view-mean"], ui["view-stddev"]].forEach((element) => {
-      element.textContent = "Loading";
-    });
-  };
   const queueViewStats = () => {
-    if (!statsTimer)
-      statsTimer = setTimeout(() => {
-        statsTimer = 0;
-        updateViewStats();
-      }, 0);
+    clearTimeout(statsTimer);
+    statsTimer = setTimeout(() => {
+      statsTimer = 0;
+      if (state.dragging || pinch || zoomFrame) {
+        queueViewStats();
+        return;
+      }
+      updateViewStats();
+    }, 180);
   };
   // Endpoints live in world meters, independent of zoom and display pixel density.
   const cursorWorldPoint = () => {
-    const mpp = metersPerPixel(state.zoom);
+    const mpp = metersPerPixel(modelZoom());
     return {
-      x: (viewport.left + cursor.x * pixelRatio) * mpp,
-      y: (viewport.top + cursor.y * pixelRatio) * mpp,
+      x: (viewport.left + (cursor.x * pixelRatio) / displayScale()) * mpp,
+      y: (viewport.top + (cursor.y * pixelRatio) / displayScale()) * mpp,
     };
   };
   const measurementLabel = (start, end) => {
@@ -197,10 +233,10 @@
     ui.distance.textContent = start && end ? measurementLabel(start, end) : "--";
     ui["clear-measurement"].disabled = !start;
     if (!start) return;
-    const mpp = metersPerPixel(state.zoom);
+    const mpp = metersPerPixel(modelZoom());
     const screenPoint = (point) => ({
-      x: (point.x / mpp - viewport.left) / pixelRatio,
-      y: (point.y / mpp - viewport.top) / pixelRatio,
+      x: ((point.x / mpp - viewport.left) * displayScale()) / pixelRatio,
+      y: ((point.y / mpp - viewport.top) * displayScale()) / pixelRatio,
     });
     const a = screenPoint(start),
       b = end ? screenPoint(end) : a;
@@ -245,33 +281,53 @@
     state.measurementStart = state.measurementEnd = null;
     drawTiles();
   };
+  const mapView = () => ({
+    seed: state.seed.toString(),
+    map: state.colormap,
+    zoom: state.zoom,
+    level: modelZoom(),
+    left: viewport.left,
+    top: viewport.top,
+    size: tileSize,
+  });
   const drawTiles = () => {
     if (!viewport) return;
-    context.fillStyle = "#082c50";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.imageSmoothingEnabled = false;
-    const previews = [...visibleTiles.values()].filter(
-      (tile) =>
-        tile.seed === state.seed.toString() &&
-        tile.map === state.colormap &&
-        tile.zoom !== state.zoom,
-    );
-    previews.sort((a, b) => Math.abs(b.zoom - state.zoom) - Math.abs(a.zoom - state.zoom));
-    for (const tile of previews) {
-      const scale = 2 ** (state.zoom - tile.zoom);
-      const x = tile.x * scale - viewport.left,
-        y = tile.y * scale - viewport.top,
-        size = tileSize * scale;
-      if (x + size > 0 && y + size > 0 && x < canvas.width && y < canvas.height)
-        context.drawImage(tile.image, x, y, size, size);
-    }
-    for (const tile of tileSequence) {
-      const cached = visibleTiles.get(tile.key);
-      if (cached) context.drawImage(cached.image, tile.x - viewport.left, tile.y - viewport.top);
-    }
+    mapRenderer.draw(mapView());
     drawMeasurement();
   };
+  function queueMapUpdate() {
+    if (mapFrame || walkView || !viewport) return;
+    mapFrame = requestAnimationFrame(() => {
+      mapFrame = 0;
+      if (walkView) return;
+      // Refresh selection first if input moved the camera since the last draw.
+      if (renderFrame) {
+        cancelAnimationFrame(renderFrame);
+        renderFrame = 0;
+        render();
+      }
+      controller.dispatch();
+      mapRenderer.update(
+        mapView(),
+        visibleTiles,
+        tileRevision,
+        TerrainHiGAN.refinement.meshBudgetMs,
+      );
+      drawTiles();
+      updateCursorElevation();
+      queueViewStats();
+      updateProgress();
+      if (mapRenderer.pending) queueMapUpdate();
+    });
+  }
   function receiveTile(data, tile, identity) {
+    controller.pipelineSize =
+      !TerrainHiGAN.mobileView &&
+      data.provider.name === "webgpu" &&
+      new URLSearchParams(location.search).get("batch") !== "1"
+        ? 3
+        : 1;
+    tileRevision++;
     const elevations = new Float32Array(data.elevations);
     ui.model.textContent = data.model;
     showProvider(data.provider);
@@ -279,31 +335,29 @@
     canvas.dataset.cacheHits = data.metrics.cacheHits;
     canvas.dataset.tileModelRuns = data.metrics.tileModelRuns;
     canvas.dataset.inferenceWorkers = data.metrics.inferenceWorkers;
-    ui.threads.textContent = `${data.metrics.inferenceWorkers} (${data.metrics.inferenceWorkers} workers x 1)`;
+    ui.threads.textContent = data.provider.name === "webgpu" ? "GPU queue" : "1 CPU thread";
     canvas.dataset.maxParallelRuns = data.metrics.maxParallelRuns;
+    canvas.dataset.maxBatchSize = data.metrics.maxBatchSize;
+    canvas.dataset.batchedRuns = data.metrics.batchedRuns;
+    canvas.dataset.inferenceBlocks = data.metrics.inferenceBlocks;
     canvas.dataset.coalescedBlocks = data.metrics.coalescedBlocks;
     const result = {
       ...tile,
-      image: makeImage(data),
+      pixels: data.pixels,
       elevations,
       stats: data.elevationStats,
       model: data.model,
       provider: data.provider,
       ...identity,
     };
-    // Drawing runs after the controller has stored the returned tile.
-    requestAnimationFrame(() => {
-      drawTiles();
-      updateCursorElevation();
-      queueViewStats();
-    });
+    queueMapUpdate();
     return result;
   }
   function showProvider(provider) {
     ui.backend.textContent = provider
       ? provider.name === "wasm"
         ? "CPU / WASM"
-        : "WebGPU + WASM"
+        : "WebGPU"
       : "Loading";
     ui.backend.title = provider?.detail || "";
     canvas.dataset.gpuError = provider?.detail || "";
@@ -311,15 +365,22 @@
   const failModel = (message) => controller.fail(message);
   const onModelWorkerMessage = ({ data }) => {
     if (data.type === "bundle-changed") {
-      location.reload();
+      TerrainHiGAN.notifyUpdate();
       return;
     }
-    controller.receive(data);
+    if (data.type === "phase") {
+      TerrainHiGAN.setRenderPhase(data.message);
+      return;
+    }
+    controller.receive(data, false);
+    if (["tile", "cancelled", "error"].includes(data.type)) queueMapUpdate();
   };
   const resize = () => {
-    pixelRatio = devicePixelRatio || 1;
-    canvas.width = Math.round(innerWidth * pixelRatio);
-    canvas.height = Math.round(innerHeight * pixelRatio);
+    pixelRatio = TerrainHiGAN.displayPixelRatio();
+    const width = Math.round(innerWidth * pixelRatio),
+      height = Math.round(innerHeight * pixelRatio);
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
     canvas.style.width = `${innerWidth}px`;
     canvas.style.height = `${innerHeight}px`;
     render();
@@ -330,7 +391,7 @@
       `./globe.html#seed=${state.seed}&map=${state.colormap}`;
     ui.resolution.textContent = `${formatDistance(metersPerPixel(state.zoom))} / px`;
     ui.position.textContent = `${Math.round(state.x)}, ${Math.round(state.y)}`;
-    const scale = metersPerPixel(state.zoom) * pixelRatio * 88;
+    const scale = metersPerPixel(state.zoom) * pixelRatio * TerrainHiGAN.scalePixels;
     ui["scale-label"].textContent = formatDistance(scale);
     document
       .querySelectorAll("[data-map]")
@@ -342,45 +403,54 @@
     if (walkView) return;
     updateUi();
     updateUrl();
-    const mpp = metersPerPixel(state.zoom);
+    const mpp = metersPerPixel(modelZoom());
     const centerX = state.x / mpp,
       centerY = state.y / mpp;
     viewport = {
-      left: Math.floor(centerX - canvas.width / 2),
-      top: Math.floor(centerY - canvas.height / 2),
+      left: centerX - canvas.width / (2 * displayScale()),
+      top: centerY - canvas.height / (2 * displayScale()),
     };
+    Object.assign(canvas.dataset, { viewZoom: state.zoom, viewX: state.x, viewY: state.y });
     const firstX = Math.floor(viewport.left / tileSize),
       firstY = Math.floor(viewport.top / tileSize),
-      lastX = Math.floor((viewport.left + canvas.width - 1) / tileSize),
-      lastY = Math.floor((viewport.top + canvas.height - 1) / tileSize);
-    tileSequence = [];
-    for (let tileY = firstY; tileY <= lastY; tileY++)
-      for (let tileX = firstX; tileX <= lastX; tileX++)
-        tileSequence.push({
-          tileX,
-          tileY,
-          x: tileX * tileSize,
-          y: tileY * tileSize,
-          width: tileSize,
-          height: tileSize,
-          key: tileKey(tileX, tileY),
-        });
-    tileSequence.sort(
-      (left, right) =>
-        Math.hypot(left.x + tileSize / 2 - centerX, left.y + tileSize / 2 - centerY) -
-        Math.hypot(right.x + tileSize / 2 - centerX, right.y + tileSize / 2 - centerY),
-    );
+      lastX = Math.ceil((viewport.left + canvas.width / displayScale()) / tileSize) - 1,
+      lastY = Math.ceil((viewport.top + canvas.height / displayScale()) / tileSize) - 1;
+    const nextSelection = `${state.seed}:${state.colormap}:${modelZoom()}:${firstX}:${firstY}:${lastX}:${lastY}`;
+    const selectionChanged = nextSelection !== selectionKey;
+    if (selectionChanged) {
+      selectionKey = nextSelection;
+      tileSequence = [];
+      for (let tileY = firstY; tileY <= lastY; tileY++)
+        for (let tileX = firstX; tileX <= lastX; tileX++)
+          tileSequence.push({
+            tileX,
+            tileY,
+            x: tileX * tileSize,
+            y: tileY * tileSize,
+            width: tileSize,
+            height: tileSize,
+            key: tileKey(tileX, tileY),
+          });
+      tileSequence.sort(
+        (left, right) =>
+          Math.hypot(left.x + tileSize / 2 - centerX, left.y + tileSize / 2 - centerY) -
+          Math.hypot(right.x + tileSize / 2 - centerX, right.y + tileSize / 2 - centerY),
+      );
+    }
     const displayed = tileSequence.map((tile) => visibleTiles.get(tile.key)).find(Boolean);
     ui.model.textContent = displayed?.model || "Loading";
     showProvider(displayed?.provider);
-    resetViewStats();
     drawTiles();
+    queueViewStats();
     updateCursorElevation();
-    controller.setView(tileSequence, {
-      seed: state.seed.toString(),
-      map: state.colormap,
-      zoom: state.zoom,
-    });
+    if (selectionChanged || controller.sequence !== tileSequence)
+      controller.setView(tileSequence, {
+        seed: state.seed.toString(),
+        map: state.colormap,
+        zoom: modelZoom(),
+      });
+    updateProgress();
+    queueMapUpdate();
   };
   let renderFrame = 0;
   const queueRender = () => {
@@ -400,10 +470,63 @@
     state.zoom = next;
     return true;
   };
+  let zoomFrame = 0,
+    zoomTarget = state.zoom;
+  const stopZoom = () => {
+    cancelAnimationFrame(zoomFrame);
+    zoomFrame = 0;
+    zoomTarget = state.zoom;
+  };
   const zoomAt = (delta, clientX = innerWidth / 2, clientY = innerHeight / 2) => {
-    if (moveZoom(delta, clientX, clientY)) render();
+    zoomTarget = clamp((zoomFrame ? zoomTarget : state.zoom) + delta, 0, 20);
+    cancelAnimationFrame(zoomFrame);
+    let previous = performance.now();
+    const step = (now) => {
+      const remaining = zoomTarget - state.zoom;
+      const amount =
+        Math.abs(remaining) < 0.001
+          ? remaining
+          : remaining * (1 - Math.exp(-(now - previous) / 45));
+      previous = now;
+      moveZoom(amount, clientX, clientY);
+      render();
+      zoomFrame = state.zoom === zoomTarget ? 0 : requestAnimationFrame(step);
+    };
+    zoomFrame = requestAnimationFrame(step);
+  };
+  const touches = new Map();
+  let pinch = null;
+  const touchGesture = () => {
+    const [a, b] = [...touches.values()];
+    return {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+      distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+    };
+  };
+  const beginPinch = () => {
+    const gesture = touchGesture();
+    const ratio = metersPerPixel(state.zoom) * pixelRatio;
+    return {
+      ...gesture,
+      zoom: state.zoom,
+      worldX: state.x + (gesture.x - innerWidth / 2) * ratio,
+      worldY: state.y + (gesture.y - innerHeight / 2) * ratio,
+    };
   };
   canvas.addEventListener("pointerdown", (event) => {
+    stopZoom();
+    if (event.pointerType === "touch") {
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY, id: event.pointerId });
+      canvas.setPointerCapture(event.pointerId);
+      if (touches.size >= 2) {
+        pinch = beginPinch();
+        state.dragging = false;
+        state.pointer = null;
+        canvas.classList.add("dragging");
+        return;
+      }
+    }
     if (!event.isPrimary || event.button !== 0) return;
     cursor = { x: event.clientX, y: event.clientY };
     updateCursorElevation();
@@ -412,7 +535,20 @@
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (!event.isPrimary) return;
+    if (touches.has(event.pointerId)) {
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY, id: event.pointerId });
+      if (pinch && touches.size >= 2) {
+        const next = touchGesture();
+        const target = clamp(pinch.zoom + Math.log2(next.distance / pinch.distance), 0, 20);
+        state.zoom = target;
+        const ratio = metersPerPixel(state.zoom) * pixelRatio;
+        state.x = pinch.worldX - (next.x - innerWidth / 2) * ratio;
+        state.y = pinch.worldY - (next.y - innerHeight / 2) * ratio;
+        queueRender();
+        return;
+      }
+    }
+    if (!event.isPrimary && state.pointer?.id !== event.pointerId) return;
     cursor = { x: event.clientX, y: event.clientY };
     if (state.dragging) {
       if (!canvas.classList.contains("dragging")) {
@@ -431,7 +567,21 @@
       if (state.measurementStart && !state.measurementEnd) drawTiles();
     }
   });
+  const endTouch = (event) => {
+    if (!touches.delete(event.pointerId) || !pinch) return false;
+    if (touches.size < 2) {
+      pinch = null;
+      state.pointer = touches.values().next().value || null;
+      state.dragging = !!state.pointer;
+      canvas.classList.toggle("dragging", state.dragging);
+    } else pinch = beginPinch();
+    return true;
+  };
   canvas.addEventListener("pointerup", (event) => {
+    if (endTouch(event)) {
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (!state.pointer || state.pointer.id !== event.pointerId) return;
     cursor = { x: event.clientX, y: event.clientY };
     if (!canvas.classList.contains("dragging") && viewport) {
@@ -446,12 +596,14 @@
     canvas.releasePointerCapture(event.pointerId);
     canvas.classList.remove("dragging");
   });
-  canvas.addEventListener("lostpointercapture", () => {
+  canvas.addEventListener("lostpointercapture", (event) => {
+    if (endTouch(event) || state.pointer?.id !== event.pointerId) return;
     state.dragging = false;
     state.pointer = null;
     canvas.classList.remove("dragging");
   });
   canvas.addEventListener("pointercancel", (event) => {
+    if (endTouch(event)) return;
     if (!state.pointer || state.pointer.id !== event.pointerId) return;
     state.dragging = false;
     state.pointer = null;
@@ -466,11 +618,14 @@
     "wheel",
     (event) => {
       event.preventDefault();
-      if (moveZoom(event.deltaY < 0 ? 1 : -1, event.clientX, event.clientY)) queueRender();
+      const delta =
+        event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? innerHeight : 1);
+      zoomAt(clamp(-delta * 0.002, -0.75, 0.75), event.clientX, event.clientY);
     },
     { passive: false },
   );
   document.getElementById("randomize").addEventListener("click", () => {
+    stopZoom();
     exitWalk(false);
     state.seed = BigInt.asUintN(
       64,
@@ -479,14 +634,17 @@
     state.x = state.y = 0;
     clearMeasurement();
     render();
+    saveUrl();
   });
   ui.seed.addEventListener("change", () => {
     try {
       const seed = TerrainHiGAN.parseSeed(ui.seed.value);
+      stopZoom();
       exitWalk(false);
       state.seed = seed;
       clearMeasurement();
       render();
+      saveUrl();
     } catch (_) {
       ui.seed.value = state.seed.toString();
     }
@@ -500,6 +658,7 @@
         return;
       }
       render();
+      saveUrl();
     }),
   );
   ui["clear-measurement"].addEventListener("click", clearMeasurement);
@@ -552,8 +711,9 @@
     if (event.key === "r" || event.key === "R") document.getElementById("randomize").click();
     if (event.key === "Home") {
       event.preventDefault();
+      stopZoom();
       state.x = state.y = 0;
-      state.zoom = 0;
+      state.zoom = initialZoom();
       render();
     }
     if (event.key === "+" || event.key === "=") zoomAt(1);
@@ -570,7 +730,7 @@
     if (bundleCheckPending) return;
     bundleCheckPending = true;
     try {
-      if ((await readModelBundle()) !== modelBundle) location.reload();
+      if ((await readModelBundle()) !== modelBundle) TerrainHiGAN.notifyUpdate();
     } catch (error) {
       console.warn("Could not check model bundle:", error);
     } finally {
@@ -582,7 +742,10 @@
     if (!walkView) return;
     Object.assign(state, walkView.dispose());
     walkView = null;
-    if (renderMap) render();
+    if (renderMap) {
+      render();
+      saveUrl();
+    }
   };
   document.getElementById("toggle-walk").addEventListener("click", async () => {
     if (walkView) {
@@ -618,14 +781,18 @@
   addEventListener("resize", resize);
   (async () => {
     if ((await readModelBundle()) !== modelBundle) {
-      location.reload();
+      TerrainHiGAN.notifyUpdate();
       return;
     }
     ui.bundle.textContent = modelBundle.slice(0, 8);
     ui.bundle.title = `Model bundle ${modelBundle}`;
     const workerOptions = new URLSearchParams(location.search);
+    workerOptions.set("mobile", TerrainHiGAN.mobileView ? "1" : "0");
+    workerOptions.delete("workers");
+    workerOptions.delete("threads");
     workerOptions.set("bundle", modelBundle);
     modelWorker = new Worker(`./model-worker.js?${workerOptions}`);
+    TerrainHiGAN.refinement.setWorker(modelWorker);
     modelWorker.onerror = (event) => failModel(event.message || "Worker initialization failed");
     modelWorker.onmessage = onModelWorkerMessage;
     resize();

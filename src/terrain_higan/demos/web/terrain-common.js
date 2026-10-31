@@ -14,6 +14,20 @@ globalThis.TerrainHiGAN ||= {};
   const elevationMeters = (value) => value * 2439.687062251 - 2342.974207789;
   const parseSeed = (value) => BigInt.asUintN(64, BigInt(value?.trim() || Date.now()));
 
+  function isMobileDevice(device = globalThis.navigator) {
+    return !!(
+      device?.userAgentData?.mobile ||
+      /Android|iPhone|iPad|iPod|Mobile/i.test(device?.userAgent || "") ||
+      (device?.platform === "MacIntel" && device?.maxTouchPoints > 1)
+    );
+  }
+
+  function displayPixelRatio() {
+    const ratio = globalThis.devicePixelRatio || 1;
+    const mobile = isMobileDevice() || globalThis.matchMedia?.("(pointer: coarse)").matches;
+    return mobile ? Math.min(2, ratio) : ratio;
+  }
+
   function validateRegion(region) {
     for (const key of ["zoom", "x", "y", "width", "height"]) {
       if (!Number.isSafeInteger(region[key])) throw new RangeError(key + " must be a safe integer");
@@ -94,6 +108,8 @@ globalThis.TerrainHiGAN ||= {};
     metersPerPixel,
     elevationMeters,
     parseSeed,
+    isMobileDevice,
+    displayPixelRatio,
     validateRegion,
     parentRegion,
     padRegion,

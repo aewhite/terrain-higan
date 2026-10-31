@@ -387,15 +387,23 @@ class GlobeWalk {
       renderer = this.renderer;
     if (!this.selection) this.selection = this.select();
     controller.selection = this.selection;
-    if (controller.active && !this.selection.required.has(controller.active.key)) {
+    if (
+      controller.active &&
+      [controller.active, ...(controller.queued || [])].some(
+        (node) => !this.selection.required.has(node.key),
+      )
+    ) {
       controller.send({ type: "cancel" });
       controller.active = null;
+      controller.queued = [];
     }
     controller.sequence = this.selection.ordered.filter((node) => !controller.tiles.has(node.key));
     controller.capacity = Math.max(512, this.selection.required.size + 128);
     for (const [key, tile] of controller.tiles) {
       if (controller.tiles.size <= controller.capacity) break;
       if (this.selection.required.has(key)) continue;
+      // Keep the globe's six coarse faces for a complete sphere on orbit exit.
+      if (tile.depth === 0 && tile.level === 2) continue;
       renderer.dispose(tile);
       controller.tiles.delete(key);
       controller.tilesVersion++;

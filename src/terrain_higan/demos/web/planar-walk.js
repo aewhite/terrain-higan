@@ -297,7 +297,10 @@ class PlanarWalkView {
             targetModelLevel: status.targetLevel,
           });
         }
-        if (status.error) this.walk.pause();
+        if (status.error) {
+          TerrainHiGAN.setRenderError(status.error);
+          this.walk.pause();
+        }
       },
     );
     this.walk = new PlanarWalk(this.renderer, this.controller, queue);
@@ -307,8 +310,12 @@ class PlanarWalkView {
     options.set("surface", "planar");
     this.worker = new Worker(`./globe-worker.js?${options}`);
     this.worker.onmessage = ({ data }) => {
+      if (data.type === "phase") {
+        TerrainHiGAN.setRenderPhase(data.message);
+        return;
+      }
       if (data.type === "bundle-changed") {
-        location.reload();
+        TerrainHiGAN.notifyUpdate();
         return;
       }
       this.controller.receive(data, false);
@@ -391,6 +398,7 @@ class PlanarWalkView {
     this.controller.update();
     const walk = this.walk,
       element = (id) => document.getElementById(id);
+    TerrainHiGAN.setRenderProgress(walk.prepared ? 1 : 0, 1, this.controller.failed);
     element("walk-status").textContent = this.controller.failed ? "Terrain failed" : walk.status;
     element("walk-mouse").textContent = walk.mouseBound ? "Bound" : "Free";
     element("walk-requested").textContent = `${walk.requestedSpeed.toFixed(1)} m/s`;

@@ -182,13 +182,11 @@ const vm = require("node:vm");
   let region;
   worker.context.importScripts = () => {};
   worker.context.postMessage = (data) => messages.push(data);
-  worker.api.InferencePool = class {
-    constructor() {
-      this.metrics = {};
-      this.providers = new Map();
-    }
-    async run() {}
-  };
+  worker.api.createInferenceRuntime = () => ({
+    metrics: {},
+    providers: new Map([["test", { name: "wasm" }]]),
+    async run() {},
+  });
   worker.api.TerrainGenerator = class {
     constructor() {
       this.cache = {};

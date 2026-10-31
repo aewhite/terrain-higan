@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link rel="manifest" href="./viewer.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Terrain HiGAN" />
     <meta name="theme-color" content="#08151a" />
     <title>Terrain HiGAN | Infinite Terrain</title>
     <link id="styles" rel="stylesheet" href="./styles.css" />
@@ -12,9 +15,30 @@
   </head>
   <body>
     <canvas id="world" aria-label="Interactive infinite terrain map"></canvas>
+    <button
+      id="toggle-controls"
+      class="icon panel"
+      type="button"
+      aria-label="Show controls"
+      aria-expanded="false"
+      aria-controls="terrain-controls"
+    >
+      ☰
+    </button>
+    <button
+      id="toggle-fullscreen"
+      hidden
+      class="icon panel"
+      type="button"
+      aria-label="Enter fullscreen"
+      aria-pressed="false"
+      title="Enter fullscreen"
+    >
+      ⛶
+    </button>
     <main class="shell">
       <header class="topbar">
-        <section class="controls panel" aria-label="Terrain controls">
+        <section id="terrain-controls" class="controls panel" aria-label="Terrain controls">
           <div class="brand">
             <h1>Terrain HiGAN</h1>
             <span
@@ -124,7 +148,7 @@
           <details class="advanced">
             <summary>Advanced</summary>
             <div class="readout">
-              <span>Compute</span><strong id="backend">Starting</strong> <span>Threads</span
+              <span>Compute</span><strong id="backend">Starting</strong> <span>Execution</span
               ><strong id="threads">--</strong> <span>Model</span
               ><strong id="model">Loading</strong> <span>Weights</span
               ><strong id="bundle">Loading</strong>
@@ -160,8 +184,19 @@
         </section>
       </header>
     </main>
-    <div class="scale" aria-label="Distance scale">
-      <span id="scale-label">45,000 km</span><i id="scale-line"></i>
+    <div class="map-tools">
+      <div id="render-progress" class="render-progress">
+        <span id="render-progress-label">Starting</span>
+        <button id="reload-viewer" type="button" hidden>Reload</button>
+        <progress
+          id="render-progress-value"
+          max="1"
+          aria-label="Terrain rendering progress"
+        ></progress>
+      </div>
+      <div class="scale" aria-label="Distance scale">
+        <span id="scale-label">45,000 km</span><i id="scale-line"></i>
+      </div>
     </div>
     <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
       <div class="dialog-header">
@@ -215,11 +250,11 @@
           </tr>
           <tr>
             <td>Zoom in</td>
-            <td><kbd>+</kbd> / <kbd>=</kbd></td>
+            <td><kbd>+</kbd> / <kbd>=</kbd> / pinch out</td>
           </tr>
           <tr>
             <td>Zoom out</td>
-            <td><kbd>-</kbd></td>
+            <td><kbd>-</kbd> / pinch in</td>
           </tr>
           <tr>
             <td>Toggle shortcuts</td>
@@ -238,8 +273,11 @@
         document.getElementById("styles").href = "./styles.css?bundle=" + bundle;
         for (const file of [
           "terrain-common.js",
+          "refinement.js",
+          "viewer-ui.js",
           "rendering.js",
           "tile-controller.js",
+          "map-renderer.js",
           "globe-topology.js",
           "globe-mesh.js",
           "globe-tile-controller.js",
@@ -254,6 +292,11 @@
           });
         }
       })().catch((error) => {
+        const progress = document.getElementById("render-progress");
+        progress.hidden = false;
+        progress.dataset.state = "failed";
+        document.getElementById("render-progress-label").textContent =
+          "Render failed: " + error.message;
         document.getElementById("status").textContent = "Model failed: " + error.message;
         const indicator = document.getElementById("render-indicator");
         indicator.dataset.state = "failed";

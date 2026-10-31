@@ -222,7 +222,7 @@ const ort = demoRequire("onnxruntime-node");
   runtime.sessions.clear();
   await runtime.sessionFor(15);
   const gpu = await runtime.sessionFor(16);
-  assert.deepEqual(providers, ["wasm", "webgpu"]);
+  assert.deepEqual(providers, ["webgpu", "webgpu"]);
   assert.equal(gpu.provider.name, "webgpu");
   options.set("backend", "wasm");
   runtime.sessions.clear();

@@ -32,9 +32,14 @@ the infinite map's locations or real Earth's continents.
 Run `npm ci` and `npm run sync-models` in this directory after updating. Installation
 also copies pinned Three.js browser assets and their licenses into the
 ignored runtime directory. Rendering requires WebGL2. Inference uses the
-WASM/WebGPU provider policy: WASM through z15 and optional WebGPU at z16–z20.
+WebGPU-first provider policy at every level, with WASM as the fallback.
 The globe supports the full z0–z20 hierarchy.
 
+- Pinch with two fingers to zoom and pan on touch screens. Lifting one finger
+  resumes rotation; pinching does not place distance measurements.
+- A blank shaded planet appears while the first coarse tiles load. Once those
+  six coarse faces are ready, the planet shows generated terrain immediately
+  and refines it in place. The progress bar stays visible until full detail is ready.
 - Drag to carry the grabbed surface location with the pointer. Movement naturally
   slows as ground resolution increases. Wheel zoom follows the pointer; `+` and
   `-` zoom at the center. Zoom stops at native z20 resolution, with clearance
@@ -87,16 +92,27 @@ terrain comes from the existing models. The 128 MiB inference cache stores raw
 and finalized blocks separately. Display capacity follows the tiles required by
 the current physical viewport, with a minimum of 512 tiles and 128 spare entries;
 eviction disposes GPU resources. Selection culls the S2 quadtree against the
-viewport and horizon before requesting tiles; offscreen siblings are not requested
-for display. The geometry-node LRU retains at most 4,096 nodes or four times the
+viewport and horizon before requesting fine tiles. All six z2 root tiles stay
+cached, including when offscreen. Offscreen regions remain coarse spatial patches
+in every committed mesh set, so rotating the camera reveals terrain immediately
+while detailed meshes catch up. Offscreen fine tiles do not trigger inference.
+The geometry-node LRU retains at most 4,096 nodes or four times the
 current selection size, whichever is larger; eviction also releases child references.
 Cached child bounds and projection samples keep camera updates separate
 from inference. Geometry refines to the camera's selected spatial patches immediately,
 even when only a coarse model tile is available. Each patch reprojects its nearest
 available ancestor's elevations and shares that ancestor's native texture. Zooming
 therefore concentrates polygons near the camera without waiting for neural inference
-or displaying giant flat parent triangles. Individual completed tiles upgrade their
-own patches immediately; there is no four-sibling loading barrier or animation loop.
+or displaying giant flat parent triangles. Individual completed tiles replace their
+own patches without a four-sibling loading barrier.
+Orbit mesh updates use a 4 ms work budget per frame, yielding during stitching and
+vertex construction. The existing mesh set stays visible until its replacements
+can be swapped together, preserving shared edges. Only one replacement set is
+prepared at a time; camera changes cancel obsolete work and release its meshes.
+Progress remains active until both inference and mesh preparation finish.
+Hidden replacement meshes upload one at a time into a 1px render target before
+the visible swap, spreading geometry/texture uploads over animation frames.
+The existing globe remains visible and interactive throughout preparation.
 Only coarse roots and final visible model tiles are requested for display, center-first;
 intermediate model dependencies remain the generator's responsibility. Offscreen
 display requests release the queue immediately. Obsolete dependency chains stop
@@ -178,7 +194,7 @@ Timings are diagnostic, not machine-dependent pass/fail thresholds.
 Source boundaries: `globe-topology.js` defines coordinates/units/geodesics;
 `globe-mesh.js` reconciles shared mesh edges and corners;
 `globe-terrain.js` owns spherical model blocks and reconciliation;
-`globe-worker.js` coordinates generation through the shared inference pool;
+`globe-worker.js` coordinates generation and one serialized ONNX runtime;
 `globe-tile-controller.js` schedules adaptive tiles and their display cache;
 `globe-renderer.js` owns Three.js meshes, picking, lighting, and overlays;
 `globe-app.js` owns DOM, input, URLs, and readouts.
@@ -204,12 +220,41 @@ same coordinate-addressed Philox algorithm used by `terrain_higan.inference`. Ma
 seeds alone do not promise identical neural terrain across providers or other
 inference implementations; small rounding differences can grow through repeated upscaling.
 
-Four independent inference workers load ONNX Runtime Web from `assets/runtime/` and z0 through
-z10 plus z11s through z20s exported checkpoints from `assets/models/`. The WebGPU
-mode uses WASM for z0 through z15, then WebGPU for z16 through z20 when available.
-This keeps the coarse parent terrain consistent across backends: tiny provider
-rounding differences in the early models otherwise grow into kilometer-scale
-differences after repeated upscaling. The WASM mode uses WASM at every level.
+Both viewers use one terrain worker with one ONNX Runtime instance and one serial
+inference queue. WebGPU is preferred for every model, including z0 and mobile.
+There are no nested inference workers or separate runtimes competing for the GPU,
+and model inputs/results stay in the terrain worker instead of being copied or
+transferred between workers. ONNX WASM threading stays at one; the legacy
+`workers` and `threads` query parameters are ignored.
+
+Desktop WebGPU combines up to four ready canonical blocks with matching models
+and input shapes into one ONNX batch. Calls remain serialized in the terrain
+worker; noise coordinates, block boundaries, and cache ownership stay unchanged.
+The viewers send up to three ordered tile requests at a time, allowing generation
+to continue between display frames while presentation still installs at most one
+replacement per animation frame. Navigation cancels obsolete groups.
+Mobile and WASM keep single-input inference and one tile request at a time.
+Use `?batch=1` to disable desktop batching and lookahead for comparison, or
+`?batch=2`, `?batch=4`, or `?batch=8` to select the desktop WebGPU batch limit.
+The canvas dataset exposes `maxBatchSize`, `batchedRuns`, and `inferenceBlocks`
+alongside the existing inference metrics.
+
+Mobile retains 128px map display tiles, a 16 MiB terrain cache, at most four model
+sessions, and bounded dependency preparation. WebGPU runs whole inference blocks.
+Only the mobile WASM fallback splits output into 32px patches and disables CPU
+memory arenas. Its windows preserve the model halo and pixel-shuffle phase.
+Generated mobile loaders cap the shared-memory reservation at 256 MiB for both
+the CPU and WebGPU/JSEP builds, replacing the upstream 4 GiB maximum. The loader
+transformation is checked against the pinned ONNX Runtime package.
+
+The worker loads the WebGPU ONNX bundle when that API is available, otherwise the
+smaller CPU bundle. ONNX’s WebGPU build also loads a WASM support module for
+runtime bookkeeping. See the [ONNX Runtime WebGPU guide](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html). Models come from `assets/models/`: z0 through z10 and z11s
+through z20s. A model that cannot initialize on WebGPU falls back to WASM. The
+Compute tooltip reports the actual provider or fallback reason. Switching from
+WASM parents to WebGPU can change the generated world for an existing seed;
+results are reproducible within the chosen backend, not identical across providers.
+
 z11 through z20 use their corresponding checkpoints, trained on z10 patches with
 each patch's deviations scaled around its preserved mean. Each export embeds its
 own measured residual scale, residual bounds, and elevation bounds from
@@ -226,16 +271,47 @@ residual to the nearest-upscaled parent.
 The network's terrain and sine/cosine input features use the nearest-upscaled
 parent; the slope-based map serves as the base for its learned corrections.
 
-Zoom changes reproject cached model tiles using nearest-neighbor sampling. Incoming
+Zoom changes reuse cached model tiles, with one filtered draw for fractional scales.
+Small pans crop the existing native-pixel mosaic instead of rebuilding it, and
+elevation statistics wait until interaction pauses. Mobile display density is
+bounded to reduce canvas and geometry work during gestures. The 2D viewer keeps
+the committed mosaic interactive while a spare canvas prepares a new zoom or
+extent. Preparation uses the same adaptive frame budget as the globe and uploads
+at most one tile per animation frame. Native tile arrivals patch only their own
+rectangle; they do not rebuild the entire cached image. Tile image creation is
+deferred out of worker-message callbacks, and progress includes pending display
+work. URL updates wait for input to settle, avoiding per-frame history writes
+and Safari's history rate limit. Incoming
 tiles replace the preview at native resolution. A separate bounded display cache
 retains prior zoom levels; a new seed or colormap never displays another world's
 preview. Obsolete display requests release immediately; shared block producers
 already in progress can finish.
 
+Rendering progress appears above the distance scale while work is pending. It
+uses short single-line labels (Runtime, Download, Check, Load, Generate), then
+disappears when the view is ready. Full failure details remain in the panel title
+and the sidebar State readout; an allocation failure is labeled Out of memory. The ruler fills the
+scale panel; its label uses that full width.
+
+The ⛶ button at the top left enters fullscreen on supported browsers and is
+hidden when unavailable. On iPhone, Safari’s Share → Add to Home Screen can open
+the viewer as a standalone app (enable Open as Web App if shown).
+
+On phones and tablets, controls start collapsed. Use the top-right menu button
+to expand or collapse them. Keyboard shortcuts and the experimental walking
+controls are hidden on mobile in both portrait and landscape.
+
 Press `F` to enter map-only focus mode, keeping the distance scale in the map's
 bottom-right corner. Press `F` again or `Escape` to restore the controls. Use the
 keyboard icon or `?` to toggle the shortcuts dialog; `Escape` also dismisses it.
-Zoom with the mouse wheel or `+` / `-` keys.
+Zoom with the mouse wheel, a two-finger pinch, or `+` / `-` keys. Drag with one
+finger to pan; two fingers can pan while pinching. The 2D camera zooms continuously;
+wheel and keyboard zoom ease between scales. Inference uses the next native model
+level, with cached terrain scaled while new detail loads. Shared URLs retain fractional zoom.
+
+New 2D views and `Home` choose the nearest zoom level whose viewport covers
+Earth’s surface area (about 510 million km²), accounting for screen size and
+pixel density. A zoom level in a shared URL takes precedence.
 
 Click or tap two map points to measure their
 straight horizontal distance. The dashed line previews the distance before the
@@ -273,15 +349,21 @@ The sync writes a bundle ID for the models and demo code after atomically replac
 changed ONNX files. The viewer shows its short ID and reloads when that ID changes, clearing model
 sessions and elevation caches held by an older browser tab. The worker also
 checks each ONNX file against the active bundle before opening a session.
-Model bytes are fetched with `cache: "no-store"`; loaded sessions are reused in
-each inference worker's memory. Each worker lazily opens only the models required
-by the current zoom level while the page shell remains responsive.
+Downloaded model files are retained in browser Cache Storage, independently of
+loaded ONNX sessions. All downloaded levels remain cached; mobile session eviction
+does not evict their files. Keys use model SHA-256 hashes, allowing 2D/globe workers,
+page reloads, and UI-only bundle updates to reuse unchanged weights. Both downloaded
+and cached bytes are verified before opening a session; damaged cache entries are
+replaced. The progress label says `Read zX` for a disk-cache hit and `Download zX`
+for a cache miss. Files are downloaded as needed, without preloading unused levels
+or retaining every model in RAM. Cache Storage requires HTTPS or localhost and is
+subject to browser storage quotas/eviction; when unavailable the worker uses the
+HTTP cache with hash-versioned URLs. The manifest is still checked without caching
+to detect model updates. The page shell remains responsive during model loading.
 
 Only model output is rendered. If WebGPU initialization fails, the worker retries
 with the WASM CPU backend. If inference still fails, the actual error remains
 visible and no procedural terrain is substituted.
-All workers must select the same provider for each model; a mismatch is reported
-as an inference error.
 
 The main metrics show render state, visible tile progress, and elevation statistics.
 The title's indicator is yellow while rendering and green when the view is ready;
@@ -289,20 +371,18 @@ failures turn it red and show the error in the State row. Both viewers show the
 world seed in the main panel. Without a seed in the URL, the current timestamp in
 milliseconds becomes the seed; clearing the seed field also selects a new timestamp.
 The selected seed is saved in the URL for reproducible links and reloads.
-Advanced contains the Compute provider, Threads readout, current Model, and weights bundle.
-Threads shows the worker count and one CPU thread per worker.
-Each inference worker uses one WASM thread. The pinned runtime's threaded convolutions round
-differently for different region shapes; repeated upscaling can amplify this into
-visible coastline breaks between neighboring tiles. The `threads` query parameter
-is ignored. Four workers are used by default (the maximum); `?workers=1` or
-`?workers=2` selects a smaller pool. Each runtime owns its model sessions and WASM memory, while
-elevation blocks and pending claims remain in the coordinator. Parent dependencies
-are assembled before dispatching inference, so workers never wait for other jobs
-in the pool. Only assembled input buffers are transferred to inference workers;
-canonical cache buffers remain owned by the coordinator. Cancelled display requests
-return promptly; the current bounded batch of block producers can finish and warm
-the shared cache for subsequent requests.
-Hover over Compute for the provider split or GPU fallback reason.
+Advanced contains the Compute provider, execution readout, current Model, and
+weights bundle. Generation, noise, caching, and ONNX execution stay off the main
+UI thread. The inference queue serializes session loading, execution, and mobile
+session eviction. Cancellation skips obsolete queued work; an active model call
+can finish and populate reusable cache blocks. The CPU fallback yields between
+model calls so cancellation messages can be handled without another worker.
+Both viewers monitor frame timing while rendering or interacting. Slow frames
+increase the gap between model calls up to 32ms; smooth frames restore throughput.
+Mobile gestures retain continuous inference with at least a 4ms gap between calls.
+Healthy desktop gestures have no fixed gap; slow frames still activate pacing.
+Gestures reduce globe mesh preparation to a 1.5ms cooperative budget per frame. Individual model
+calls and uploads cannot be preempted. Monitoring stops when the viewer is idle.
 For diagnosis, `?backend=wasm` forces CPU inference at every level.
 
 Start the local server from the repository root:
@@ -318,7 +398,7 @@ Pass another port as an argument if needed, for example
 both `.js` and `.mjs`, which the ONNX WASM module requires.
 It also supplies `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. Other static hosts must send these
-headers for cross-origin isolation. Each inference worker still uses one CPU thread.
+headers for cross-origin isolation. The terrain worker uses one CPU thread for WASM fallback.
 
 ### HTTPS on the LAN
 
@@ -357,11 +437,10 @@ npm run format:check
 Tests live under [`tests/web/`](../../../../tests/web/) and are documented in the
 [testing guide](../../../../tests/README.md). The runner starts and stops the browser
 test server automatically unless `DEMO_URL` is set. Browser tests check native Retina
-dimensions, four independent single-thread runtimes, visible terrain during zoom,
+dimensions, one serialized ONNX runtime, visible terrain during zoom,
 cached zoom-out, and consistency between neighboring coastline tiles and a
-continuous request. `SEAM_ONLY=1` checks worker-count invariance, halo/colormap
-invariance, cached crops, cancellation, and the coastline regression, and reports
-one-worker and four-worker cold and warm timings. Large Retina views can take longer to
+continuous request. `SEAM_ONLY=1` checks cache-history and halo/colormap
+invariance, cached crops, cancellation, and the coastline regression. Large Retina views can take longer to
 generate than small views.
 The measurement check verifies mouse and touch
 distances at device pixel ratios 1 and 2, meter/kilometer units, anchored endpoints,
@@ -379,16 +458,18 @@ checks that a z20 tile is identical after warming the cache in a separate worker
 
 - `index.html` bootstraps bundle-versioned scripts; `styles.css` contains presentation.
 - `app.js` owns DOM/camera/URL wiring, drawing, and readouts.
-- `tile-controller.js` owns the display cache, visible tile queue, and single active
-  request. IDs identify requests even when navigation returns to the same tile key.
+- `tile-controller.js` owns the display cache, visible tile queue, and active
+  request group. IDs identify groups and keys identify their ordered replies,
+  even when navigation returns to the same tile key.
 - `model-worker.js` coordinates the shared cache, validates tagged requests, and
   composes generation/rendering. Cancellation releases the display request while
   bounded shared block production finishes. Obsolete replies cannot
   release a newer request or become current display tiles.
-- `inference-pool.js` queues ready inference jobs across independent runtimes.
-  `inference-worker.js` owns each runtime's execution and transferable inputs/outputs.
+- `inference-runtime.js` initializes ONNX inside the terrain worker, batches
+  compatible desktop WebGPU inputs, and serializes model calls without nested
+  workers or input/output transfer copies between workers.
 - `model-runtime.js` owns model verification, sessions, provider selection, and
-  timing inside each inference worker. Each tile carries its resolved model and provider.
+  timing inside the terrain worker. Each tile carries its resolved model and provider.
 - `terrain.js` owns block recursion, pending claims, canonical region assembly,
   and the shared block LRU. Stored buffers are owned copies; messages transfer
   separate assembled or cropped buffers.
@@ -414,3 +495,11 @@ suite checks the real WASM worker, previews, errors, cancellation/navigation,
 desktop/mobile canvases, and bundle reloads. Screenshots go under
 `runs/demo-inference-refactor/`. The headed diagnostic checks actual WebGPU
 availability and reports the provider that produced each result.
+`test-webgpu-batching.cjs` compares batch sizes 1, 4, and 8 through z20, including
+spherical corner/edge collars and vertex samples. It requires identical raw
+values, checks cache-history independence and bounded desktop lookahead, and
+exercises navigation with one display upload per frame. Set `WEBGPU_REQUIRED=1`
+to fail instead of skipping its numerical checks when no GPU adapter is available.
+
+Code/model bundle updates show a Reload notice instead of automatically resetting
+the viewer. Reload when convenient to use the new bundle.

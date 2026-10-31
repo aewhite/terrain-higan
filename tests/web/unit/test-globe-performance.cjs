@@ -75,8 +75,8 @@ const { performance } = require("node:perf_hooks");
   time("overviewColdMs", () => controller.reset("1"));
   assertCoverage();
   assert(
-    controller.sequence.every((node) => renderer.visible(node.bounds)),
-    "only visible tiles are queued",
+    controller.sequence.every((node) => node.depth === 0 || renderer.visible(node.bounds)),
+    "only coarse roots and visible detail are queued",
   );
   const selection = controller.selection;
   controller.update();
@@ -113,7 +113,7 @@ const { performance } = require("node:perf_hooks");
   assert.equal(Math.max(...controller.sequence.map((node) => node.depth)), 18);
   const selectedDirection = renderer.camera.position.clone().normalize().toArray();
   assertCoverage();
-  assert(controller.sequence.every((node) => renderer.visible(node.bounds)));
+  assert(controller.sequence.every((node) => node.depth === 0 || renderer.visible(node.bounds)));
   for (const node of controller.sequence) {
     let pixels = 0;
     const samples = renderer.projectionSamples(node.bounds);

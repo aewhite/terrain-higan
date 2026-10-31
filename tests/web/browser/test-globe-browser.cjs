@@ -15,6 +15,10 @@ async function ready(page) {
     { timeout: 360000 },
   );
   assert.equal(await page.locator("#status").innerText(), "Ready");
+  assert.equal(await page.locator("#world").getAttribute("data-loading-planet"), "false");
+  assert.equal(await page.locator("#world").getAttribute("data-mesh-pending"), "false");
+  assert.equal(await page.locator("#render-progress-value").evaluate((p) => p.value), 1);
+  assert(!(await page.locator("#render-progress").isVisible()));
   await page.waitForFunction(() => Number(document.getElementById("world").dataset.samples) > 0);
 }
 
@@ -34,10 +38,18 @@ async function ready(page) {
     await page.addInitScript(() =>
       addEventListener("DOMContentLoaded", () => {
         globalThis.statusLabels = [];
+        globalThis.meshStates = [];
         const status = document.getElementById("status");
         new MutationObserver(() => statusLabels.push(status.textContent)).observe(status, {
           childList: true,
           subtree: true,
+        });
+        const canvas = document.getElementById("world");
+        new MutationObserver(() =>
+          meshStates.push({ pending: canvas.dataset.meshPending, ready: canvas.dataset.ready }),
+        ).observe(canvas, {
+          attributes: true,
+          attributeFilter: ["data-mesh-pending", "data-ready"],
         });
       }),
     );
@@ -50,6 +62,16 @@ async function ready(page) {
     await page.goto(`${baseUrl}globe.html?workers=2&backend=wasm#seed=4829347`);
     await ready(page);
     report.overviewMs = Date.now() - started;
+    assert(
+      await page.evaluate(() => meshStates.some((state) => state.pending === "true")),
+      "mesh work spans animation frames",
+    );
+    assert(
+      await page.evaluate(() =>
+        meshStates.every((state) => state.ready !== "true" || state.pending === "false"),
+      ),
+      "Ready waits for committed meshes",
+    );
     assert(await page.locator("#seed").isVisible());
     console.log("Overview ready", report.overviewMs);
     report.overview = await page.locator("#world").evaluate((canvas) => ({ ...canvas.dataset }));

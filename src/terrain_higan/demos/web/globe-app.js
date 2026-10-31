@@ -44,6 +44,9 @@
     measurementStart = null,
     measurementEnd = null;
   let readyTimer = 0;
+  let initialGlobeReady = false,
+    terrainUpdateTimer = 0,
+    lastTerrainUpdate = -Infinity;
   const showStatus = (label, phase, detail = label) => {
     if (element("status").textContent !== label) element("status").textContent = label;
     element("status").title = detail;
@@ -58,6 +61,7 @@
   const fail = (message) => {
     clearTimeout(readyTimer);
     showStatus("Error", "failed", message);
+    TerrainHiGAN.setRenderError(message);
     console.error(message);
   };
   const updateURL = () => {
@@ -181,9 +185,25 @@
     if (!renderer || !controller) return;
     cancelAnimationFrame(pointerFrame);
     pointerFrame = 0;
-    controller.update();
-    minimap?.draw();
     const now = performance.now();
+    renderer.meshBudgetMs = TerrainHiGAN.refinement.meshBudgetMs;
+    const interacting =
+      document.body.classList.contains("mobile-ui") && !walk.active && (pointerDown || pinch);
+    clearTimeout(terrainUpdateTimer);
+    if (
+      !interacting ||
+      (!controller.active && controller.sequence.length) ||
+      now - lastTerrainUpdate >= 120
+    ) {
+      controller.update();
+      lastTerrainUpdate = now;
+    } else {
+      // Continue the bounded mesh work between more expensive view selections.
+      if (controller.selection?.key === renderer.selectionKey)
+        renderer.show(controller.display, controller.patches);
+      terrainUpdateTimer = setTimeout(queueView, 120 - (now - lastTerrainUpdate));
+    }
+    minimap?.draw();
     const hudState = `${walk.status}:${walk.mouseBound}:${walk.requestedSpeed}`;
     if (walk.active && !walk.paused && now - hudUpdated < 100 && hudStatus === hudState) {
       renderer.draw();
@@ -191,6 +211,7 @@
     }
     hudUpdated = now;
     hudStatus = hudState;
+    if (walk.active) TerrainHiGAN.setRenderProgress(walk.prepared ? 1 : 0, 1, controller.failed);
     state.exaggeration = renderer.exaggeration;
     element("exaggeration").value = state.exaggeration;
     element("exaggeration").disabled = walk.active;
@@ -235,11 +256,15 @@
     const second = renderer.pick(innerWidth / 2 + 1, innerHeight / 2);
     const scale = first && second ? greatCircle(first, second) : null;
     element("resolution").textContent = scale
-      ? `${(scale / devicePixelRatio).toLocaleString(undefined, { maximumFractionDigits: 2 })} m`
+      ? `${(scale / TerrainHiGAN.displayPixelRatio()).toLocaleString(undefined, { maximumFractionDigits: 2 })} m`
       : "--";
-    element("scale-label").textContent = scale ? distanceLabel(scale * 88) : "--";
-    updatePointer();
-    updateMeasurement();
+    element("scale-label").textContent = scale
+      ? distanceLabel(scale * TerrainHiGAN.scalePixels)
+      : "--";
+    if (!interacting) {
+      updatePointer();
+      updateMeasurement();
+    }
     renderer.draw();
     updateURL();
     clearTimeout(statsTimer);
@@ -282,6 +307,17 @@
     renderer,
     (data) => worker.postMessage(data),
     (status) => {
+      if (!initialGlobeReady && (status.previewReady || status.ready)) {
+        initialGlobeReady = true;
+        if (!status.ready) TerrainHiGAN.setRenderPhase("Refining");
+      }
+      renderer.setLoading(!initialGlobeReady && !walk?.active);
+      if (renderer.meshPending && !controller.sequence.length)
+        TerrainHiGAN.setRenderPhase("Refining");
+      TerrainHiGAN.setRenderProgress(
+        status.ready ? 1 : status.visible,
+        status.ready ? 1 : status.visible + status.pending,
+      );
       if (status.error) {
         if (walk?.active) walk.pause();
         fail(status.error);
@@ -311,6 +347,13 @@
       canvas.dataset.visibleTiles = status.visible;
       canvas.dataset.cachedTiles = status.cached;
       canvas.dataset.ready = status.ready;
+      canvas.dataset.meshPending = !!renderer.meshPending;
+      canvas.dataset.previewReady = status.previewReady;
+      canvas.dataset.renderStage = status.ready
+        ? "ready"
+        : initialGlobeReady
+          ? "refining"
+          : "preview";
       canvas.dataset.tileCapacity = status.capacity;
       canvas.dataset.targetModelLevel = status.targetLevel;
       canvas.dataset.samplePixels = status.samplePixels;
@@ -351,6 +394,7 @@
     }
   });
   const startWorker = () => {
+    initialGlobeReady = false;
     if (worker && !controller.failed) {
       worker.postMessage({ type: "reset" });
       controller.reset(state.seed);
@@ -358,12 +402,20 @@
     }
     worker?.terminate();
     const options = new URLSearchParams(location.search);
+    options.set("mobile", TerrainHiGAN.mobileView ? "1" : "0");
+    options.delete("workers");
+    options.delete("threads");
     options.set("bundle", TerrainHiGAN.bundle);
     worker = new Worker(`./globe-worker.js?${options}`);
+    TerrainHiGAN.refinement.setWorker(worker);
     worker.onerror = (event) => controller.fail(event.message || "Globe worker failed");
     worker.onmessage = ({ data }) => {
       if (data.type === "bundle-changed") {
-        location.reload();
+        TerrainHiGAN.notifyUpdate();
+        return;
+      }
+      if (data.type === "phase") {
+        TerrainHiGAN.setRenderPhase(data.message);
         return;
       }
       if (data.type === "progress") {
@@ -373,16 +425,24 @@
       }
       if (controller.failed || data.id !== controller.active?.id) return;
       if (data.type === "tile") {
-        element("backend").textContent =
-          data.provider.name === "wasm" ? "CPU / WASM" : "WebGPU + WASM";
-        element("backend").title =
-          "Shared ONNX runtime policy: WASM z0–z15; optional WebGPU z16–z20";
-        element("threads").textContent = `${data.metrics.inferenceWorkers} × 1`;
+        controller.pipelineSize =
+          !TerrainHiGAN.mobileView &&
+          data.provider.name === "webgpu" &&
+          new URLSearchParams(location.search).get("batch") !== "1"
+            ? 3
+            : 1;
+        element("backend").textContent = data.provider.name === "wasm" ? "CPU / WASM" : "WebGPU";
+        element("backend").title = data.provider.detail || "";
+        element("threads").textContent =
+          data.provider.name === "webgpu" ? "GPU queue" : "1 CPU thread";
         Object.assign(canvas.dataset, {
           modelRuns: data.metrics.modelRuns,
           cacheBytes: data.metrics.cacheBytes,
           cacheHits: data.metrics.cacheHits,
           maxParallelRuns: data.metrics.maxParallelRuns,
+          maxBatchSize: data.metrics.maxBatchSize,
+          batchedRuns: data.metrics.batchedRuns,
+          inferenceBlocks: data.metrics.inferenceBlocks,
         });
       }
       controller.receive(data, false);
@@ -430,12 +490,32 @@
     const words = crypto.getRandomValues(new Uint32Array(2));
     setSeed(((BigInt(words[0]) << 32n) | BigInt(words[1])).toString());
   });
+  const touches = new Map();
+  let pinch = null;
+  const touchGesture = () => {
+    const [a, b] = [...touches.values()];
+    return {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+      distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+    };
+  };
   canvas.addEventListener("pointerdown", (event) => {
     if (walk.active) {
       canvas.focus();
       return;
     }
     if (event.button !== 0) return;
+    if (event.pointerType === "touch") {
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY, id: event.pointerId });
+      canvas.setPointerCapture(event.pointerId);
+      if (touches.size >= 2) {
+        pinch = touchGesture();
+        pointerDown = null;
+        canvas.classList.add("dragging");
+        return;
+      }
+    }
     pointerDown = {
       x: event.clientX,
       y: event.clientY,
@@ -451,6 +531,18 @@
     if (walk.active) {
       return;
     }
+    if (touches.has(event.pointerId)) {
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY, id: event.pointerId });
+      if (pinch && touches.size >= 2) {
+        const next = touchGesture();
+        renderer.zoom(pinch.distance / next.distance, pinch.x, pinch.y);
+        renderer.drag(pinch.x, pinch.y, next.x, next.y);
+        pinch = next;
+        queueView();
+        return;
+      }
+    }
+    if (pointerDown && pointerDown.id !== event.pointerId) return;
     if (pointerDown && Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4)
       pointerDown.moved = true;
     if (pointerDown?.moved) {
@@ -460,10 +552,30 @@
     }
     queuePointer();
   });
+  const endTouch = (event) => {
+    if (!touches.delete(event.pointerId) || !pinch) return false;
+    if (touches.size >= 2) pinch = touchGesture();
+    else {
+      pinch = null;
+      const remaining = touches.values().next().value;
+      pointerDown = remaining
+        ? { ...remaining, lastX: remaining.x, lastY: remaining.y, moved: true }
+        : null;
+      canvas.classList.toggle("dragging", !!remaining);
+    }
+    queueView();
+    return true;
+  };
   canvas.addEventListener(
     "pointerup",
     (event) => {
       if (walk.active) return;
+      if (endTouch(event)) {
+        if (canvas.hasPointerCapture(event.pointerId))
+          canvas.releasePointerCapture(event.pointerId);
+        return;
+      }
+      if (pointerDown?.id !== event.pointerId) return;
       if (pointerDown?.id === event.pointerId && !pointerDown.moved) {
         const point = renderer.surfacePick(event.clientX, event.clientY);
         if (point) {
@@ -476,14 +588,17 @@
         }
       }
       pointerDown = null;
+      queueView();
       if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
       canvas.classList.remove("dragging");
     },
     { capture: true },
   );
   for (const name of ["pointercancel", "lostpointercapture"])
-    canvas.addEventListener(name, () => {
+    canvas.addEventListener(name, (event) => {
+      if (endTouch(event) || pointerDown?.id !== event.pointerId) return;
       pointerDown = null;
+      queueView();
       canvas.classList.remove("dragging");
     });
   canvas.addEventListener("pointerleave", (event) => {
@@ -586,7 +701,7 @@
     try {
       const response = await fetch("./assets/models/manifest.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`Model manifest returned HTTP ${response.status}`);
-      if ((await response.json()).bundle !== TerrainHiGAN.bundle) location.reload();
+      if ((await response.json()).bundle !== TerrainHiGAN.bundle) TerrainHiGAN.notifyUpdate();
     } catch (error) {
       console.warn("Could not check globe bundle", error);
     } finally {

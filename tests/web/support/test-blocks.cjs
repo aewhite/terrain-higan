@@ -1,17 +1,8 @@
 const assert = require("node:assert/strict");
 const { loadModules } = require("./test-support.cjs");
-const { MessageChannel, receiveMessageOnPort } = require("node:worker_threads");
 
 module.exports = async function checkBlocks() {
-  const { api } = loadModules();
-  for (const [query, size] of [
-    ["", 4],
-    ["workers=1", 1],
-    ["workers=2", 2],
-    ["workers=8", 4],
-  ]) {
-    assert.equal(new api.InferencePool(new URLSearchParams(query), () => {}).size, size);
-  }
+  const { api, context } = loadModules();
   const request = { seed: 1n, assertCurrent() {} };
   const region = { zoom: 0, x: -3, y: -5, width: 2, height: 3 };
   const generator = new api.TerrainGenerator({});
@@ -102,144 +93,173 @@ module.exports = async function checkBlocks() {
   await fresh;
   assert.equal((await clearing.generate(region, request)).values[0], 2);
 
-  const workers = [];
-  const pool = new api.InferencePool(
-    new URLSearchParams("workers=2"),
-    () => {},
-    (url) => {
-      const worker = {
-        url,
-        messages: [],
-        terminated: false,
-        postMessage(data, buffers) {
-          const ports = new MessageChannel();
-          ports.port1.postMessage(data, buffers);
-          this.messages.push(receiveMessageOnPort(ports.port2).message);
-          ports.port1.close();
-          ports.port2.close();
-        },
-        terminate() {
-          this.terminated = true;
-        },
-      };
-      workers.push(worker);
-      return worker;
-    },
-  );
-  const model = await pool.sessionFor(0);
-  const input = (value) => ({ noise: pool.tensor(new Float32Array([value]), [1, 1, 1, 1]) });
-  const jobs = [1, 2, 3, 4].map((value) => pool.run(model, input(value)));
-  assert.equal(workers.length, 2);
-  assert.equal(pool.queue.length, 2);
-  assert.equal(pool.metrics.maxParallelRuns, 2);
-  const reply = (worker, index, provider = "wasm") => {
-    const message = worker.messages[index];
-    worker.onmessage({
-      data: {
-        type: "result",
-        id: message.id,
-        model: "z0",
-        provider: { name: provider, label: provider, detail: "test" },
-        values: message.inputs.noise.data.buffer,
-        dims: [1, 1, 1, 1],
-        inferenceMs: 3,
+  {
+    const calls = [];
+    const feeds = [];
+    const fakeOrt = {
+      env: { wasm: { numThreads: 4 } },
+      Tensor: class {
+        constructor(_type, data, dims) {
+          this.data = data;
+          this.dims = dims;
+        }
       },
-    });
-  };
-  reply(workers[1], 0);
-  reply(workers[0], 0);
-  reply(workers[0], 1);
-  reply(workers[1], 1);
-  assert.deepEqual(
-    (await Promise.all(jobs)).map((result) => result.elevation_normalized.data[0]),
-    [1, 2, 3, 4],
-  );
-  assert.equal(pool.metrics.modelRuns, 4);
-  assert.equal(pool.metrics.inferenceMs, 12);
-  assert.equal(pool.queue.length, 0);
-  assert(pool.slots.every((slot) => !slot.job));
-
-  const fatal = [1, 2, 3].map((value) => pool.run(model, input(value)));
-  const settled = Promise.allSettled(fatal);
-  workers[0].onerror({ message: "worker crashed" });
-  assert((await settled).every((result) => result.status === "rejected"));
-  assert(workers.every((worker) => worker.terminated));
-  await assert.rejects(pool.run(model, input(4)), /worker crashed/);
-
-  const startup = new api.InferencePool(
-    new URLSearchParams(),
-    () => {},
-    () => {
-      throw new Error("startup failed");
-    },
-  );
-  await assert.rejects(startup.run(model, input(1)), /startup failed/);
-  assert.equal(startup.queue.length, 0);
-
-  const mismatchedWorkers = [];
-  const mismatched = new api.InferencePool(
-    new URLSearchParams(),
-    () => {},
-    () => {
-      const worker = {
-        messages: [],
-        postMessage(data) {
-          this.messages.push(data);
+      InferenceSession: {
+        async create(file, settings) {
+          calls.push({ file, provider: settings.executionProviders[0] });
+          return {
+            async run(inputs) {
+              feeds.push(inputs);
+              return { elevation_normalized: { data: inputs.noise.data, dims: inputs.noise.dims } };
+            },
+            async release() {},
+          };
         },
-        terminate() {},
-      };
-      mismatchedWorkers.push(worker);
-      return worker;
-    },
-  );
-  const mismatchJobs = [mismatched.run(model, input(1)), mismatched.run(model, input(2))];
-  const mismatchResults = Promise.allSettled(mismatchJobs);
-  reply(mismatchedWorkers[0], 0);
-  reply(mismatchedWorkers[1], 0, "webgpu");
-  const results = await mismatchResults;
-  assert.equal(results[0].status, "fulfilled");
-  assert.equal(results[1].status, "rejected");
-  assert.match(results[1].reason.message, /different providers/);
-
-  const childReplies = [];
-  const childOrt = {
-    env: { wasm: { numThreads: 4 } },
-    Tensor: class {
-      constructor(_type, data, dims) {
-        this.data = data;
-        this.dims = dims;
-      }
-    },
-    InferenceSession: {
-      async create() {
-        return {
-          async run(inputs) {
-            assert.deepEqual(Array.from(inputs.noise.dims), [1, 1, 80, 80]);
-            return {
-              elevation_normalized: {
-                data: new Float32Array(64 * 64).fill(9),
-                dims: [1, 1, 64, 64],
-              },
-            };
-          },
-        };
       },
-    },
-  };
-  const child = loadModules({ ort: childOrt, postMessage: (data) => childReplies.push(data) });
-  child.load("inference-worker.js");
-  await child.context.onmessage({
-    data: {
-      id: 42,
-      zoom: 0,
-      inputs: { noise: { data: new Float32Array(80 * 80), dims: [1, 1, 80, 80] } },
-    },
-  });
-  assert.equal(childOrt.env.wasm.numThreads, 1, "each child owns a single-thread runtime");
-  assert.equal(childReplies[0].id, 42);
-  assert.equal(childReplies[0].type, "result");
-  assert.equal(new Float32Array(childReplies[0].values)[0], 9);
-  console.log(
-    "Block checks passed: canonical crops, shared claims, cancellation, failure/retry, clear ownership, worker routing",
-  );
+    };
+    const phases = [];
+    context.navigator.gpu = {};
+    const gpu = new api.InferenceRuntime(
+      new URLSearchParams("mobile=1&workers=8"),
+      (data) => phases.push(data),
+      fakeOrt,
+    );
+    for (const zoom of [0, 5, 15, 20]) {
+      const data = new Float32Array(80 * 80).fill(zoom);
+      const result = await gpu.run(await gpu.sessionFor(zoom), {
+        noise: gpu.tensor(data, [1, 1, 80, 80]),
+      });
+      assert.equal(
+        result.provider.name,
+        "webgpu",
+        "all levels, including mobile parents, prefer WebGPU",
+      );
+      assert.equal(
+        result.elevation_normalized.data,
+        data,
+        "GPU outputs need no worker-transfer copy",
+      );
+      assert.equal(data.length, 80 * 80, "inputs remain owned by the generation worker");
+    }
+    assert(calls.every((call) => call.provider === "webgpu"));
+    assert.equal(feeds.length, 4, "mobile GPU execution uses whole blocks, not CPU micro-patches");
+    const originalSession = await gpu.runtime.sessionFor(0);
+    gpu.runtime.sessions.set(
+      0,
+      Promise.resolve({ ...originalSession, provider: { name: "wasm" } }),
+    );
+    await assert.rejects(
+      gpu.run(await gpu.sessionFor(0), { noise: gpu.tensor(new Float32Array(1), [1, 1, 1, 1]) }),
+      /provider changed/,
+      "an existing world's cache cannot mix different providers for the same model",
+    );
+    assert.equal(feeds.length, 4, "a provider change is rejected before running another block");
+    assert.equal(gpu.metrics.maxParallelRuns, 1);
+    assert(phases.some((phase) => phase.phase === "initialize"));
+    assert(phases.some((phase) => phase.phase === "inference"));
+
+    const failingOrt = {
+      ...fakeOrt,
+      InferenceSession: {
+        async create(file, settings) {
+          if (settings.executionProviders[0] === "webgpu")
+            throw new Error("GPU adapter unavailable");
+          return fakeOrt.InferenceSession.create(file, settings);
+        },
+      },
+    };
+    const fallback = new api.ModelRuntime(failingOrt, new URLSearchParams(), () => {});
+    const cpu = await fallback.sessionFor(0);
+    assert.equal(cpu.provider.name, "wasm");
+    assert.match(cpu.provider.detail, /GPU adapter unavailable/);
+    assert.equal(await fallback.sessionFor(0), cpu, "fallback sessions are reused");
+
+    // A single execution queue skips cancelled work before loading a session and
+    // keeps session eviction outside active execution.
+    let release, started;
+    const entered = new Promise((resolve) => (started = resolve));
+    const hold = new Promise((resolve) => (release = resolve));
+    let active = 0,
+      maximum = 0;
+    const ran = [];
+    const serialOrt = {
+      ...fakeOrt,
+      InferenceSession: {
+        async create(file) {
+          return {
+            async run(inputs) {
+              active++;
+              maximum = Math.max(maximum, active);
+              ran.push(file);
+              if (ran.length === 1) {
+                started();
+                await hold;
+              }
+              active--;
+              return { elevation_normalized: { data: inputs.noise.data, dims: inputs.noise.dims } };
+            },
+            async release() {
+              assert.equal(active, 0, "sessions cannot be released during a run");
+            },
+          };
+        },
+      },
+    };
+    const serial = new api.InferenceRuntime(
+      new URLSearchParams("backend=wasm&mobile=1"),
+      () => {},
+      serialOrt,
+    );
+    const input = () => ({ noise: serial.tensor(new Float32Array([3]), [1, 1, 1, 1]) });
+    const first = serial.run(await serial.sessionFor(0), input());
+    await entered;
+    let obsolete = false;
+    const cancelled = assert.rejects(
+      serial.run(await serial.sessionFor(1), input(), () => {
+        if (obsolete) throw new Error("cancelled");
+      }),
+      /cancelled/,
+    );
+    const following = [];
+    for (let zoom = 2; zoom < 8; zoom++)
+      following.push(serial.run(await serial.sessionFor(zoom), input()));
+    setTimeout(() => {
+      obsolete = true;
+    }, 0);
+    release();
+    await Promise.all([first, cancelled, ...following]);
+    assert.equal(maximum, 1, "ONNX execution never overlaps across sessions");
+    assert(
+      !ran.some((file) => file.endsWith("z1.onnx")),
+      "cancelled queued work never reaches ONNX",
+    );
+    assert.equal(serial.runtime.sessions.size, 4, "mobile session memory stays bounded");
+    assert.equal(serial.metrics.modelRuns, 7);
+
+    const imports = [];
+    const loadScripts = context.importScripts;
+    context.importScripts = (...files) => {
+      imports.push(...files);
+      loadScripts(...files);
+    };
+    context.ort = fakeOrt;
+    api.createInferenceRuntime(new URLSearchParams("mobile=1"), () => {});
+    assert(imports.some((file) => file.includes("ort.webgpu.min.js")));
+    assert.match(fakeOrt.env.wasm.wasmPaths.mjs, /ort-wasm-mobile\.jsep\.mjs$/);
+    assert.equal(fakeOrt.env.wasm.numThreads, 1);
+    imports.length = 0;
+    api.createInferenceRuntime(new URLSearchParams("mobile=1&backend=wasm"), () => {});
+    assert(imports.some((file) => file.includes("ort.wasm.min.js")));
+    assert.match(fakeOrt.env.wasm.wasmPaths.mjs, /ort-wasm-mobile\.mjs$/);
+    delete context.navigator.gpu;
+    imports.length = 0;
+    api.createInferenceRuntime(new URLSearchParams(), () => {});
+    assert(
+      imports.some((file) => file.includes("ort.wasm.min.js")),
+      "missing WebGPU selects CPU runtime",
+    );
+    console.log(
+      "Canonical blocks, cancellation/ownership, GPU-first execution, CPU fallback and one serialized runtime passed",
+    );
+  }
 };

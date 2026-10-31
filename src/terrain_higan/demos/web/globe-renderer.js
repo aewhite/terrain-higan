@@ -18,7 +18,7 @@ const {
   canonicalPixel,
   arcPoints,
   greatCircle,
-  stitchPatches,
+  stitchPatchSteps,
   edgeValue,
 } = TerrainHiGAN.globe;
 
@@ -87,6 +87,12 @@ class GlobeRenderer {
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.4));
     this.sun = new THREE.DirectionalLight(0xffffff, 1.7);
     this.scene.add(this.sun);
+    this.loadingPlanet = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9999, 64, 32),
+      this.depthMaterial(new THREE.MeshLambertMaterial({ color: 0x345467 })),
+    );
+    this.scene.add(this.loadingPlanet);
+    this.canvas.dataset.loadingPlanet = "true";
     this.raycaster = new THREE.Raycaster();
     this.sphere = new THREE.Sphere(new THREE.Vector3(), 1);
     this.frustum = new THREE.Frustum();
@@ -99,6 +105,13 @@ class GlobeRenderer {
       this.setView(20, -25, RADIUS * 2);
       this.resize();
     }
+  }
+
+  setLoading(loading) {
+    if (this.loadingPlanet.visible === loading) return;
+    this.loadingPlanet.visible = loading;
+    this.canvas.dataset.loadingPlanet = String(loading);
+    this.renderDirty = true;
   }
 
   createStars() {
@@ -307,7 +320,7 @@ class GlobeRenderer {
   }
 
   resize() {
-    this.renderer.setPixelRatio(devicePixelRatio || 1);
+    this.renderer.setPixelRatio(TerrainHiGAN.displayPixelRatio());
     this.renderer.setSize(innerWidth, innerHeight);
     this.camera.aspect = innerWidth / innerHeight;
     this.updateCamera();
@@ -818,6 +831,14 @@ class GlobeRenderer {
   }
 
   createTile(tile) {
+    const steps = this.createTileSteps(tile);
+    let result;
+    do result = steps.next();
+    while (!result.done);
+    return result.value;
+  }
+
+  *createTileSteps(tile) {
     const segments = tile.segments ?? this.meshSegments(tile);
     const stride = 64 / segments;
     const { uvs, indices, boundary, skirtStart, width } = tileLayouts.get(segments);
@@ -831,7 +852,7 @@ class GlobeRenderer {
     const normal = new THREE.Vector3(),
       shared = new Float64Array(6);
     const center = this.tileOrigin(tile);
-    for (let row = 0; row <= segments; row++)
+    for (let row = 0; row <= segments; row++) {
       for (let column = 0; column <= segments; column++) {
         const vertex = row * width + column;
         const nativeColumn = column * stride,
@@ -860,6 +881,8 @@ class GlobeRenderer {
         }
         normal.toArray(normals, vertex * 3);
       }
+      yield;
+    }
     for (let offset = 0; offset < boundary.length; offset++) {
       const index = boundary[offset];
       const point = new THREE.Vector3().fromArray(positions, index * 3).add(center);
@@ -929,6 +952,7 @@ class GlobeRenderer {
     }
     this.tiles.add(mesh);
     tile.mesh = mesh;
+    tile.styleVersion = this.styleVersion;
     return tile;
   }
 
@@ -951,70 +975,178 @@ class GlobeRenderer {
   }
 
   restyle(tiles, map, exaggeration) {
+    this.cancelMeshUpdate();
     this.renderDirty = true;
     this.displayPatches = null;
     this.stitchCache = undefined;
-    for (const patch of this.patchTiles?.values() || []) this.dispose(patch);
-    this.patchTiles = new Map();
+    this.styleVersion = (this.styleVersion || 0) + 1;
+    if (this.walk?.active) this.clearPatches();
+    const displayedTextures = new Set(
+      [...(this.patchTiles?.values() || [])].map((tile) => tile.mesh.material.map),
+    );
+    this.retiredTextures ||= new Set();
     this.map = map;
     this.exaggeration = exaggeration;
     for (const tile of tiles) {
-      this.dispose(tile);
-      delete tile.mesh;
+      if (tile.texture) {
+        if (displayedTextures.has(tile.texture)) this.retiredTextures.add(tile.texture);
+        else tile.texture.dispose();
+        delete tile.texture;
+      }
     }
     if (this.walk?.active) this.walk.resetMeshes();
   }
 
-  show(tiles, patches) {
-    if (this.displayPatches === patches) return;
-    this.displayPatches = patches;
+  cancelMeshUpdate() {
+    this.meshUpdate?.steps.return();
+    for (const tile of this.meshUpdate?.created || []) this.dispose(tile);
+    this.meshUpdate = null;
+    this.meshPending = false;
+  }
+
+  usesTile(tile) {
+    return this.displayTiles?.includes(tile) || this.meshUpdate?.sources.has(tile);
+  }
+
+  clearPatches() {
+    this.cancelMeshUpdate();
+    this.uploadTarget?.dispose();
+    this.uploadTarget = null;
+    this.uploadScene = null;
+    for (const tile of this.patchTiles?.values() || []) this.dispose(tile);
+    this.patchTiles = new Map();
+    this.displayTiles = [];
+    this.displayPatches = null;
+    this.stitchCache = undefined;
+    for (const texture of this.retiredTextures || []) texture.dispose();
+    this.retiredTextures?.clear();
+    this.renderDirty = true;
+  }
+
+  show(tiles, patches, budgetMs = this.meshBudgetMs ?? 4) {
     this.patchTiles ||= new Map();
-    this.displayTiles = tiles;
-    const layout = patches.map((patch) => ({ ...patch, segments: this.meshSegments(patch) }));
+    if (this.meshUpdate && this.meshUpdate.view !== this.selectionKey) this.cancelMeshUpdate();
+    if (!this.meshUpdate && this.displayPatches !== patches) {
+      const job = {
+        view: this.selectionKey,
+        sources: new Set(tiles),
+        created: [],
+      };
+      job.steps = this.buildMeshUpdate(tiles, patches, job);
+      this.meshUpdate = job;
+    }
+    if (this.meshUpdate) {
+      const deadline = performance.now() + budgetMs;
+      let result;
+      do {
+        result = this.meshUpdate.steps.next();
+        if (result.value) {
+          this.uploadTile(result.value);
+          // GPU uploads/first draws are indivisible. Never accumulate a batch
+          // of them in a frame, even if CPU preparation used little time.
+          if (Number.isFinite(budgetMs)) break;
+        }
+      } while (!result.done && performance.now() < deadline);
+      if (result.done) this.meshUpdate = null;
+      // Finish the latest data on another frame, without queueing every reply.
+      this.onChange();
+    }
+    this.meshPending = !!this.meshUpdate || this.displayPatches !== patches;
+  }
+
+  uploadTile(tile) {
+    // Render one hidden replacement into a tiny target to upload its geometry
+    // and texture before the atomic visible swap.
+    if (!this.uploadTarget) {
+      this.uploadTarget = new THREE.WebGLRenderTarget(1, 1);
+      this.uploadScene = new THREE.Scene();
+      for (const child of this.scene.children)
+        if (child.isLight) this.uploadScene.add(child.clone());
+    }
+    const target = this.renderer.getRenderTarget();
+    const mesh = tile.mesh;
+    const culled = mesh.frustumCulled;
+    this.uploadScene.add(mesh);
+    mesh.visible = true;
+    mesh.frustumCulled = false;
+    try {
+      this.renderer.setRenderTarget(this.uploadTarget);
+      this.renderer.render(this.uploadScene, this.camera);
+    } finally {
+      this.renderer.setRenderTarget(target);
+      mesh.visible = false;
+      mesh.frustumCulled = culled;
+      this.scene.add(mesh);
+    }
+    // Three.js uses a different output-color shader for render targets. Prepare
+    // the display variant here too, rather than initializing a batch at swap time.
+    this.renderer.compile(mesh, this.camera, this.scene);
+  }
+
+  *buildMeshUpdate(tiles, patches, job) {
+    const layout = [];
+    for (const patch of patches) {
+      layout.push({ ...patch, segments: this.meshSegments(patch) });
+      yield;
+    }
     if (
       layout.length === this.patchTiles.size &&
       layout.every((patch) => {
         const existing = this.patchTiles.get(patch.key);
         return (
-          existing?.source === patch.source && existing.mesh.userData.segments === patch.segments
+          existing?.source === patch.source &&
+          existing.mesh.userData.segments === patch.segments &&
+          existing.styleVersion === this.styleVersion
         );
       })
-    )
+    ) {
+      this.displayPatches = patches;
+      this.displayTiles = tiles;
       return;
-    const stitched = stitchPatches(layout, this.stitchCache, this.meshVertex.bind(this));
-    this.stitchCache = stitched.cache;
-    const required = new Map(stitched.patches.map((patch) => [patch.key, patch]));
-    for (const [key, tile] of this.patchTiles) {
-      const patch = required.get(key);
-      if (
-        !patch ||
-        patch.source !== tile.source ||
-        patch.segments !== tile.mesh.userData.segments ||
-        patch.edgeBindings.some(
-          (binding, index) =>
-            binding.line !== tile.edgeBindings[index].line ||
-            binding.start !== tile.edgeBindings[index].start ||
-            binding.end !== tile.edgeBindings[index].end,
-        )
-      ) {
-        this.dispose(tile);
-        this.patchTiles.delete(key);
-        this.renderDirty = true;
-      }
     }
+    const stitched = yield* stitchPatchSteps(layout, this.stitchCache, this.meshVertex.bind(this));
+    const next = new Map();
     for (const patch of stitched.patches) {
-      if (this.patchTiles.has(patch.key)) continue;
-      const tile = this.createTile({
-        ...patch,
-        level: patch.source.level,
-        values: patch.source.values,
-        vertexValues: patch.source.vertexValues,
-      });
+      const existing = this.patchTiles.get(patch.key);
+      if (
+        existing?.source === patch.source &&
+        existing.styleVersion === this.styleVersion &&
+        existing.mesh.userData.segments === patch.segments &&
+        patch.edgeBindings.every(
+          (binding, index) =>
+            binding.line === existing.edgeBindings[index].line &&
+            binding.start === existing.edgeBindings[index].start &&
+            binding.end === existing.edgeBindings[index].end,
+        )
+      )
+        next.set(patch.key, existing);
+      else {
+        const tile = yield* this.createTileSteps({
+          ...patch,
+          level: patch.source.level,
+          values: patch.source.values,
+          vertexValues: patch.source.vertexValues,
+        });
+        job.created.push(tile);
+        next.set(patch.key, tile);
+        yield tile;
+      }
+      yield;
+    }
+    // Shared edges must change together. Keep the old set visible until every
+    // replacement is ready, then commit without yielding halfway through.
+    for (const [key, tile] of this.patchTiles) if (next.get(key) !== tile) this.dispose(tile);
+    for (const tile of job.created) {
       tile.mesh.visible = true;
       tile.mesh.updateMatrixWorld();
-      this.patchTiles.set(patch.key, tile);
-      this.renderDirty = true;
     }
+    this.patchTiles = next;
+    this.displayPatches = patches;
+    this.displayTiles = tiles;
+    this.stitchCache = stitched.cache;
+    for (const texture of this.retiredTextures || []) texture.dispose();
+    this.retiredTextures?.clear();
+    this.renderDirty = true;
     const previousKey = this.selectionKey;
     this.updateCamera();
     if (previousKey !== this.selectionKey) this.onChange();
